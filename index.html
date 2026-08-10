@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#14281d" />
+    <title>Find and Add Your Book — Scan a Barcode, Save It</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="#top" aria-label="Find and Add Your Book home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span>Find and Add Your Book</span>
+        </a>
+        <div class="header-actions">
+          <span id="connection-pill" class="connection-pill"><i></i> Local collection</span>
+          <button id="open-account" class="icon-button" aria-label="Sign in or create an account" title="Account">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.25"/><path d="M5 19.5c1.4-3.4 4-5 7-5s5.6 1.6 7 5"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main id="top">
+        <section class="hero">
+          <p class="eyebrow">Your pocket librarian</p>
+          <h1>Scan it. <em>Know it.</em><br />Keep it.</h1>
+          <p class="hero-copy">Scan a book’s barcode to find its title and author, then save it straight to your collection.</p>
+        </section>
+
+        <section class="scan-card" aria-labelledby="scan-title">
+          <div class="scan-card-heading">
+            <div>
+              <p class="section-kicker">Add a book</p>
+              <h2 id="scan-title">What are you reading?</h2>
+            </div>
+            <span class="barcode-decoration" aria-hidden="true"><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>
+          </div>
+
+          <div class="input-row">
+            <label class="isbn-field">
+              <span class="sr-only">Book ISBN or barcode number</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v4M5 16v4M8 4v16M11 4v16M15 4v16M19 4v4M19 16v4"/></svg>
+              <input id="isbn-input" inputmode="numeric" autocomplete="off" placeholder="Enter ISBN or scan barcode" />
+            </label>
+            <button id="lookup-button" class="button button-primary">Find book <span aria-hidden="true">→</span></button>
+          </div>
+          <p id="input-help" class="field-help">Try <button class="text-button sample-isbn" data-isbn="9780143110439">9780143110439</button> to see it in action.</p>
+
+          <div class="scan-options">
+            <span>or</span>
+            <button id="camera-button" class="button button-secondary">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.75 7.75h2.8l1.2-2h6.5l1.2 2h2.8A1.75 1.75 0 0 1 21 9.5v8.75A1.75 1.75 0 0 1 19.25 20h-14A1.75 1.75 0 0 1 3.5 18.25V9.5a1.75 1.75 0 0 1 1.25-1.75Z"/><circle cx="12.25" cy="13.75" r="3.5"/></svg>
+              Scan with camera
+            </button>
+            <p>Point your camera at the barcode on the back of a book.</p>
+          </div>
+        </section>
+
+        <section id="result-section" class="result-section hidden" aria-live="polite"></section>
+
+        <section class="collection-section" aria-labelledby="collection-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Your shelf</p>
+              <h2 id="collection-title">Recently added</h2>
+            </div>
+            <div class="collection-controls">
+              <div class="view-toggle" role="group" aria-label="Collection view">
+                <button id="view-cards" class="view-toggle-button active" type="button">Cards</button>
+                <button id="view-sheet" class="view-toggle-button" type="button">Sheet</button>
+              </div>
+              <button id="export-xlsx" class="button button-quiet">Export .xlsx</button>
+              <button id="export-csv" class="button button-quiet">Export .csv</button>
+              <button id="clear-library" class="clear-button">Clear local list</button>
+            </div>
+          </div>
+          <div id="library-list" class="library-list"></div>
+          <div id="empty-library" class="empty-library">
+            <span class="empty-book" aria-hidden="true">⌁</span>
+            <p>Your collection is waiting for its first story.</p>
+          </div>
+        </section>
+      </main>
+
+      <footer>Book data from Google Books, Open Library, and regional catalogue entries · Sign in to keep your collection with you on any device</footer>
+    </div>
+
+    <dialog id="account-dialog" class="settings-dialog">
+      <div class="dialog-header">
+        <div><p class="section-kicker">Account</p><h2>Keep your shelf with you</h2></div>
+        <button id="close-account" class="close-button" aria-label="Close account panel">×</button>
+      </div>
+      <div class="settings-body">
+        <div id="account-signed-out">
+          <p>Sign in with your email to save your collection to your own account — it'll follow you to any device, instead of staying on this one browser.</p>
+          <label class="settings-field">Email
+            <input id="account-email" type="email" autocomplete="email" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com" />
+          </label>
+          <label class="settings-field">Password
+            <input id="account-password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="At least 6 characters" />
+          </label>
+          <p id="account-error" class="account-error hidden"></p>
+          <div class="settings-actions">
+            <button id="sign-in-button" class="button button-primary">Sign in</button>
+            <button id="sign-up-button" class="button button-quiet">Create account</button>
+          </div>
+          <p class="manual-copy"><button id="forgot-password" class="text-button-inline">Forgot your password?</button></p>
+        </div>
+        <div id="account-signed-in" class="hidden">
+          <p>Signed in as <strong id="account-email-display"></strong>. Your collection is saved to your account and synced automatically.</p>
+          <div class="settings-actions">
+            <button id="sign-out-button" class="button button-quiet">Sign out</button>
+          </div>
+        </div>
+        <details>
+          <summary>Setting up accounts for your site (one-time, for the site owner)</summary>
+          <ol>
+            <li>Create a free project at <a href="https://console.firebase.google.com" target="_blank">console.firebase.google.com</a>.</li>
+            <li><strong>Build → Authentication → Get started</strong>, enable the <strong>Email/Password</strong> sign-in method.</li>
+            <li><strong>Build → Firestore Database → Create database</strong>, then set its security rules so each account only reaches its own books (see the comment in <code>app.js</code> for the exact rules to paste).</li>
+            <li>Project settings → your app → copy the <code>firebaseConfig</code> object, and paste it into <code>firebaseConfig</code> near the top of <code>app.js</code>.</li>
+            <li>Re-deploy the site. Everyone who signs up will then have their own private collection.</li>
+          </ol>
+        </details>
+      </div>
+    </dialog>
+
+    <dialog id="camera-dialog" class="camera-dialog">
+      <div class="dialog-header">
+        <div><p class="section-kicker">Barcode scanner</p><h2>Hold the code in frame</h2></div>
+        <button id="close-camera" class="close-button" aria-label="Close scanner">×</button>
+      </div>
+      <div class="camera-viewfinder">
+        <video id="camera-video" playsinline muted></video>
+        <div class="scan-guide" aria-hidden="true"><span></span><span></span></div>
+        <p id="camera-status">Starting camera…</p>
+      </div>
+      <p class="dialog-help">If scanning does not start, enter the barcode number manually. Camera access works on secure sites (HTTPS) or localhost.</p>
+    </dialog>
+
+    <template id="result-template">
+      <article class="book-result">
+        <img class="result-cover" alt="" />
+        <div class="result-details">
+          <p class="match-label">Book found</p>
+          <h2 class="result-title"></h2>
+          <p class="result-author"></p>
+          <p class="result-meta"></p>
+          <p class="result-description"></p>
+          <div class="result-actions">
+            <button class="button button-primary save-book">Save to collection <span aria-hidden="true">→</span></button>
+            <button class="button button-quiet find-another">Find another</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <!-- Accounts + cloud storage, so a signed-in collection follows the person across devices -->
+    <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js"></script>
+    <!-- Fallback barcode decoder for browsers (Safari/iOS) that don't implement the native BarcodeDetector API -->
+    <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+    <!-- Builds a real .xlsx file client-side so the collection can be exported without any Google Sheets setup -->
+    <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
