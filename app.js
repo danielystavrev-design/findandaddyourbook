@@ -12,6 +12,7 @@ const elements = {
   exportXlsxButton: document.querySelector('#export-xlsx'),
   exportCsvButton: document.querySelector('#export-csv'),
   locationFilter: document.querySelector('#location-filter'),
+  defaultPlace: document.querySelector('#default-place'),
   cameraDialog: document.querySelector('#camera-dialog'),
   cameraVideo: document.querySelector('#camera-video'),
   cameraStatus: document.querySelector('#camera-status'),
@@ -42,6 +43,10 @@ const storage = {
   set locations(names) { localStorage.setItem('bookdrop:locations', JSON.stringify(names)); },
   get locationFilter() { return localStorage.getItem('bookdrop:location-filter') || ''; },
   set locationFilter(value) { localStorage.setItem('bookdrop:location-filter', value); },
+  // The place newly found books are shelved into by default, so a whole
+  // bookcase can be scanned in one go without re-picking it every time.
+  get defaultLocation() { return localStorage.getItem('bookdrop:default-location') || ''; },
+  set defaultLocation(value) { localStorage.setItem('bookdrop:default-location', value); },
 };
 
 // --- Physical locations -------------------------------------------------
@@ -63,6 +68,32 @@ function rememberLocation(name) {
 }
 
 const NEW_LOCATION_VALUE = '__new__';
+
+// The picker in the scan card. Whatever is chosen here becomes the place a
+// newly found book is offered under, which is what makes shelving a stack of
+// books practical: set it once, then keep scanning.
+function renderDefaultPlacePicker() {
+  const host = elements.defaultPlace;
+  if (!host) return;
+  // A Firestore update can land at any moment; repainting mid-typing would
+  // silently discard a name the person is still writing.
+  if (host.contains(document.activeElement)
+      && document.activeElement.classList.contains('location-new-input')) return;
+  const picker = buildLocationPicker(storage.defaultLocation, {
+    label: 'Add scanned books to',
+  });
+  const commit = value => {
+    storage.defaultLocation = value;
+    if (value) renderDefaultPlacePicker();   // repaint so a new name appears listed
+  };
+  picker.element.querySelector('.location-select').addEventListener('change', event => {
+    if (event.target.value !== NEW_LOCATION_VALUE) commit(event.target.value);
+  });
+  const input = picker.element.querySelector('.location-new-input');
+  input.addEventListener('keydown', event => { if (event.key === 'Enter') commit(picker.value()); });
+  input.addEventListener('blur', () => { const v = picker.value(); if (v) commit(v); });
+  host.replaceChildren(picker.element);
+}
 
 // Builds a <select> of known places plus an "add a new one" escape hatch.
 // Returns a function that reads the currently chosen place, so callers don't
@@ -443,7 +474,7 @@ function renderResult(book) {
 
   // Chosen before saving, so a book is shelved the moment it enters the
   // collection rather than needing a second pass later.
-  activeLocationPicker = buildLocationPicker(book.location || '');
+  activeLocationPicker = buildLocationPicker(book.location || storage.defaultLocation);
   fragment.querySelector('.result-details').insertBefore(
     activeLocationPicker.element,
     fragment.querySelector('.result-actions')
@@ -684,6 +715,9 @@ function visibleBooks() {
 
 function renderLibrary() {
   renderLocationFilter();
+  // Places can be invented from the result card or from a saved book, so the
+  // scan-card picker is repainted here to stay in step with both.
+  renderDefaultPlacePicker();
   const books = visibleBooks();
   const total = currentLibraryBooks.length;
   elements.emptyLibrary.hidden = total > 0;

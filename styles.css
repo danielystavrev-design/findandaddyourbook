@@ -215,3 +215,48 @@ dialog { width: min(100% - 36px, 600px); border: 0; border-radius: 14px; color: 
   font-size: 14px;
   background: var(--card);
 }
+
+/* The scan card is dark, so the picker there needs its own light treatment
+   rather than the default one used against cream backgrounds. */
+.default-place {
+  position: relative;
+  z-index: 1;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #ffffff1f;
+}
+
+.default-place .location-picker {
+  margin: 0;
+  gap: 10px;
+}
+
+.default-place .location-label {
+  color: #a3b5a5;
+  font-size: 11px;
+}
+
+.default-place .location-select,
+.default-place .location-new-input {
+  background: #ffffff14;
+  border-color: #ffffff2e;
+  color: #f4f1e6;
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+.default-place .location-new-input::placeholder {
+  color: #ffffff5c;
+}
+
+.default-place .location-select:focus-visible,
+.default-place .location-new-input:focus-visible {
+  outline-color: var(--gold);
+}
+
+/* Native dropdown lists render in the OS palette, so options must be dark-on-
+   light regardless of the field they drop out of. */
+.default-place .location-select option {
+  color: var(--ink);
+  background: var(--card);
+}
