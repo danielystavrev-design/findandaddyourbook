@@ -11,6 +11,7 @@ const elements = {
   viewSheetButton: document.querySelector('#view-sheet'),
   exportXlsxButton: document.querySelector('#export-xlsx'),
   exportCsvButton: document.querySelector('#export-csv'),
+  locationFilter: document.querySelector('#location-filter'),
   cameraDialog: document.querySelector('#camera-dialog'),
   cameraVideo: document.querySelector('#camera-video'),
   cameraStatus: document.querySelector('#camera-status'),
@@ -34,47 +35,101 @@ const storage = {
   set catalogue(entries) { localStorage.setItem('bookdrop:catalogue', JSON.stringify(entries)); },
   get libraryView() { return localStorage.getItem('bookdrop:library-view') || 'cards'; },
   set libraryView(view) { localStorage.setItem('bookdrop:library-view', view); },
+  // Names of the physical places books live in — "Hallway, top shelf",
+  // "Bedroom", "Box in the cellar". Kept separately from the books so a place
+  // can exist before anything is shelved there, and survives emptying a shelf.
+  get locations() { return JSON.parse(localStorage.getItem('bookdrop:locations') || '[]'); },
+  set locations(names) { localStorage.setItem('bookdrop:locations', JSON.stringify(names)); },
+  get locationFilter() { return localStorage.getItem('bookdrop:location-filter') || ''; },
+  set locationFilter(value) { localStorage.setItem('bookdrop:location-filter', value); },
 };
 
+// --- Physical locations -------------------------------------------------
+
+// The authoritative list is the union of places the person has named and
+// places actually in use by a book. Deriving the second half means a
+// signed-in collection carries its locations across devices for free,
+// without needing a second Firestore collection to keep in sync.
+function knownLocations() {
+  const used = currentLibraryBooks.map(book => book.location).filter(Boolean);
+  return [...new Set([...storage.locations, ...used])].sort((a, b) => a.localeCompare(b));
+}
+
+function rememberLocation(name) {
+  const clean = (name || '').trim();
+  if (!clean) return '';
+  if (!storage.locations.includes(clean)) storage.locations = [...storage.locations, clean];
+  return clean;
+}
+
+const NEW_LOCATION_VALUE = '__new__';
+
+// Builds a <select> of known places plus an "add a new one" escape hatch.
+// Returns a function that reads the currently chosen place, so callers don't
+// have to care whether it came from the dropdown or the free-text field.
+function buildLocationPicker(selected = '', { label = 'Where is this book kept?' } = {}) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'location-picker';
+  const select = document.createElement('select');
+  select.className = 'location-select';
+  select.setAttribute('aria-label', label);
+  const input = document.createElement('input');
+  input.className = 'location-new-input hidden';
+  input.type = 'text';
+  input.placeholder = 'Name this place, e.g. Bedroom, middle shelf';
+  input.setAttribute('aria-label', 'Name of the new place');
+
+  const paint = () => {
+    const places = knownLocations();
+    select.replaceChildren();
+    const blank = new Option('No place set', '');
+    select.append(blank);
+    places.forEach(place => select.append(new Option(place, place)));
+    select.append(new Option('+ Add a new place…', NEW_LOCATION_VALUE));
+    select.value = places.includes(selected) ? selected : '';
+  };
+  paint();
+
+  select.addEventListener('change', () => {
+    const adding = select.value === NEW_LOCATION_VALUE;
+    input.classList.toggle('hidden', !adding);
+    if (adding) input.focus();
+  });
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'location-label';
+  labelEl.textContent = label;
+  wrapper.append(labelEl, select, input);
+
+  return {
+    element: wrapper,
+    // Commits a brand-new name to the saved list the moment it's read.
+    value() {
+      if (select.value === NEW_LOCATION_VALUE) return rememberLocation(input.value);
+      return select.value;
+    },
+  };
+}
+
 let activeBook = null;
+let activeLocationPicker = null;
 let cameraStream = null;
 let scanTimer = null;
 let toastTimer = null;
 let zxingControls = null;
 let bookArchive = {};
 
-// Every network call goes through this wrapper. Without a timeout a single
-// unresponsive host (Open Library and Google Books are both third parties we
-// don't control) leaves the awaiting promise pending forever, which used to
-// freeze the "Find book" button on "Searching…" with no way to recover.
-const REQUEST_TIMEOUT_MS = 8000;
-
-async function fetchWithTimeout(url, timeoutMs = REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // Loaded once at startup: a large ISBN-keyed catalogue of Bulgarian editions
 // (from the uploaded Book-archive-Knigohodets file) so those titles are
 // recognised instantly, without depending on Google Books/Open Library.
-// The promise is kept so a lookup started while the ~3 MB file is still
-// downloading waits for it instead of silently skipping the archive and
-// falling through to the (much worse) public-catalogue lookups.
-let archiveReady = null;
-
 async function loadBookArchive() {
   try {
-    const response = await fetchWithTimeout('./book-archive.json', 30000);
+    const response = await fetch('./book-archive.json');
     if (!response.ok) return;
     bookArchive = await response.json();
     updateConnectionState();
   } catch (error) {
-    // Archive is an enhancement, not a requirement — continue without it.
+    // Archive is an enhancement, not a requirement — silently continue without it.
   }
 }
 
@@ -312,11 +367,6 @@ async function lookupBook() {
   elements.resultSection.classList.add('hidden');
 
   try {
-    // Wait for the local archive if it is still downloading, so a scan made
-    // seconds after page load still matches against those thousands of
-    // Bulgarian editions rather than falling through to the network.
-    await archiveReady;
-
     for (const candidate of candidates) {
       // The bulk local archive (thousands of Bulgarian editions) is checked
       // first — instant, no network. Local catalogue and the small regional
@@ -338,7 +388,7 @@ async function lookupBook() {
 
 async function fetchGoogleBook(isbn) {
   try {
-    const response = await fetchWithTimeout(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
+    const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
     // Public Google Books lookups can be temporarily rate-limited. In that
     // case (or if its response is unavailable), use Open Library instead.
     if (!response.ok) return null;
@@ -360,7 +410,7 @@ async function fetchGoogleBook(isbn) {
 }
 
 async function fetchOpenLibraryBook(isbn) {
-  const response = await fetchWithTimeout(`https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`);
+  const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`);
   if (!response.ok) throw new Error('lookup-failed');
   const info = (await response.json())[`ISBN:${isbn}`];
   if (!info) return null;
@@ -384,7 +434,20 @@ function renderResult(book) {
   fragment.querySelector('.result-title').textContent = book.title;
   fragment.querySelector('.result-author').textContent = book.authors;
   fragment.querySelector('.result-meta').textContent = [book.published, book.publisher].filter(Boolean).join(' · ') || `ISBN ${book.isbn}`;
-  fragment.querySelector('.result-description').textContent = book.description.replace(/<[^>]*>/g, '');
+  // Archive entries carry no description, so this must tolerate the field
+  // being absent rather than assuming a string.
+  const description = (book.description || '').replace(/<[^>]*>/g, '');
+  const descriptionEl = fragment.querySelector('.result-description');
+  descriptionEl.textContent = description;
+  descriptionEl.hidden = !description;
+
+  // Chosen before saving, so a book is shelved the moment it enters the
+  // collection rather than needing a second pass later.
+  activeLocationPicker = buildLocationPicker(book.location || '');
+  fragment.querySelector('.result-details').insertBefore(
+    activeLocationPicker.element,
+    fragment.querySelector('.result-actions')
+  );
   fragment.querySelector('.save-book').addEventListener('click', saveActiveBook);
   fragment.querySelector('.find-another').addEventListener('click', () => { elements.resultSection.classList.add('hidden'); elements.isbnInput.select(); });
   const cobissLink = document.createElement('a');
@@ -483,7 +546,7 @@ async function fetchOpenLibraryByTitle(title, authors) {
   try {
     const params = new URLSearchParams({ title, limit: '5' });
     if (authors) params.set('author', authors);
-    const response = await fetchWithTimeout(`https://openlibrary.org/search.json?${params}`);
+    const response = await fetch(`https://openlibrary.org/search.json?${params}`);
     if (!response.ok) return [];
     const data = await response.json();
     return (data.docs || []).map(doc => ({
@@ -501,7 +564,7 @@ async function fetchOpenLibraryByTitle(title, authors) {
 async function fetchGoogleByTitle(title, authors) {
   try {
     const query = `intitle:${title}${authors ? `+inauthor:${authors}` : ''}`;
-    const response = await fetchWithTimeout(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5`);
+    const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5`);
     if (!response.ok) return [];
     const data = await response.json();
     return (data.items || []).map(item => {
@@ -550,11 +613,15 @@ async function saveActiveBook() {
   if (!activeBook) return;
   const existing = currentLibraryBooks.find(book => book.isbn === activeBook.isbn);
   if (existing) { showToast('That edition is already in your collection.'); return; }
-  const book = { ...activeBook, addedAt: new Date().toISOString() };
+  const location = activeLocationPicker ? activeLocationPicker.value() : '';
+  const book = { ...activeBook, location, addedAt: new Date().toISOString() };
   // Remember this edition locally so the same barcode is matched instantly next time,
   // regardless of whether it came from a direct match, a title search, or manual entry,
   // and regardless of whether the person is signed in.
-  storage.catalogue = { ...storage.catalogue, [book.isbn]: book };
+  // The catalogue is a bibliographic cache shared by every future scan, so
+  // the personal shelf placement is deliberately left out of it.
+  const { location: _shelf, addedAt: _added, ...bibliographic } = book;
+  storage.catalogue = { ...storage.catalogue, [book.isbn]: bibliographic };
   document.querySelector('.save-book')?.setAttribute('disabled', '');
 
   if (currentUser && firebaseReady) {
@@ -574,12 +641,55 @@ async function saveActiveBook() {
   showToast(currentUser ? 'Saved to your account — it will follow you on any device.' : 'Saved to your local collection. Sign in to keep it on every device.');
 }
 
+// Moves a book to a different place, in whichever store is currently backing
+// the collection. Returns once the change is durable.
+async function updateBookLocation(book, location) {
+  if (currentUser && firebaseReady && book.id) {
+    try {
+      await db.collection('users').doc(currentUser.uid).collection('books')
+        .doc(book.id).update({ location });
+      // onSnapshot re-renders for us.
+    } catch (error) {
+      showToast('Could not move that book. Please try again.');
+    }
+    return;
+  }
+  storage.books = storage.books.map(entry =>
+    entry.isbn === book.isbn && entry.addedAt === book.addedAt
+      ? { ...entry, location }
+      : entry);
+  currentLibraryBooks = storage.books;
+  renderLibrary();
+}
+
+function renderLocationFilter() {
+  const places = knownLocations();
+  const host = elements.locationFilter;
+  if (!host) return;
+  host.hidden = places.length === 0;
+  const current = storage.locationFilter;
+  host.replaceChildren();
+  host.append(new Option('All places', ''));
+  places.forEach(place => host.append(new Option(place, place)));
+  host.append(new Option('Not placed yet', '__none__'));
+  host.value = [...places, '', '__none__'].includes(current) ? current : '';
+}
+
+function visibleBooks() {
+  const filter = storage.locationFilter;
+  if (!filter) return currentLibraryBooks;
+  if (filter === '__none__') return currentLibraryBooks.filter(book => !book.location);
+  return currentLibraryBooks.filter(book => book.location === filter);
+}
+
 function renderLibrary() {
-  const books = currentLibraryBooks;
-  elements.emptyLibrary.hidden = books.length > 0;
-  elements.clearLibrary.hidden = books.length === 0;
-  elements.exportXlsxButton.hidden = books.length === 0;
-  elements.exportCsvButton.hidden = books.length === 0;
+  renderLocationFilter();
+  const books = visibleBooks();
+  const total = currentLibraryBooks.length;
+  elements.emptyLibrary.hidden = total > 0;
+  elements.clearLibrary.hidden = total === 0;
+  elements.exportXlsxButton.hidden = total === 0;
+  elements.exportCsvButton.hidden = total === 0;
 
   const view = storage.libraryView;
   elements.viewCardsButton.classList.toggle('active', view === 'cards');
@@ -595,7 +705,7 @@ function renderLibrary() {
     elements.sheetWrapper.classList.remove('hidden');
     elements.sheetWrapper.innerHTML = books.length === 0 ? '' : `
       <table class="sheet-table">
-        <thead><tr><th>Added</th><th>Title</th><th>Author(s)</th><th>ISBN</th><th>Published</th><th>Publisher</th><th>Source</th><th>Description</th></tr></thead>
+        <thead><tr><th>Added</th><th>Title</th><th>Author(s)</th><th>ISBN</th><th>Published</th><th>Publisher</th><th>Place</th></tr></thead>
         <tbody>${books.map(book => `
           <tr>
             <td>${new Date(book.addedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
@@ -604,8 +714,7 @@ function renderLibrary() {
             <td class="sheet-isbn">${escapeHtml(book.isbn || '')}</td>
             <td>${escapeHtml(book.published || '')}</td>
             <td>${escapeHtml(book.publisher || '')}</td>
-            <td>${escapeHtml(book.source || '')}</td>
-            <td class="sheet-desc" title="${escapeHtml(book.description || '')}">${escapeHtml(book.description || '')}</td>
+            <td class="sheet-place">${escapeHtml(book.location || '—')}</td>
           </tr>`).join('')}</tbody>
       </table>`;
     return;
@@ -613,12 +722,50 @@ function renderLibrary() {
 
   elements.libraryList.classList.remove('hidden');
   elements.sheetWrapper?.classList.add('hidden');
-  elements.libraryList.innerHTML = books.map(book =>
-    `<article class="library-item"><img class="library-cover" src="${bookCover(book)}" alt="" /><div><h3 class="library-title">${escapeHtml(book.title)}</h3><p class="library-author">${escapeHtml(book.authors)}</p></div><time class="library-date" datetime="${book.addedAt}">${new Date(book.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time></article>`
-  ).join('');
+
+  // A filter that matches nothing would otherwise leave a silent blank gap,
+  // since the general empty state is reserved for a genuinely empty shelf.
+  if (books.length === 0 && total > 0) {
+    const notice = document.createElement('p');
+    notice.className = 'library-filter-empty';
+    notice.textContent = storage.locationFilter === '__none__'
+      ? 'Every book has a place assigned.'
+      : 'No books kept here yet.';
+    elements.libraryList.replaceChildren(notice);
+    return;
+  }
+
+  elements.libraryList.replaceChildren(...books.map(book => {
+    const item = document.createElement('article');
+    item.className = 'library-item';
+    item.innerHTML = `
+      <img class="library-cover" src="${bookCover(book)}" alt="" />
+      <div class="library-body">
+        <h3 class="library-title">${escapeHtml(book.title)}</h3>
+        <p class="library-author">${escapeHtml(book.authors)}</p>
+      </div>
+      <time class="library-date" datetime="${book.addedAt}">${new Date(book.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>`;
+
+    // Books move around in real life, so the place has to stay editable
+    // rather than being fixed at the moment of saving.
+    const picker = buildLocationPicker(book.location || '', { label: 'Kept in' });
+    picker.element.classList.add('library-location');
+    picker.element.querySelector('.location-select').addEventListener('change', event => {
+      if (event.target.value !== NEW_LOCATION_VALUE) updateBookLocation(book, event.target.value);
+    });
+    picker.element.querySelector('.location-new-input').addEventListener('keydown', event => {
+      if (event.key === 'Enter') updateBookLocation(book, picker.value());
+    });
+    picker.element.querySelector('.location-new-input').addEventListener('blur', () => {
+      const value = picker.value();
+      if (value) updateBookLocation(book, value);
+    });
+    item.querySelector('.library-body').append(picker.element);
+    return item;
+  }));
 }
 
-const EXPORT_COLUMNS = ['Added at', 'Title', 'Author(s)', 'ISBN', 'Published', 'Publisher', 'Source', 'Description'];
+const EXPORT_COLUMNS = ['Added at', 'Title', 'Author(s)', 'ISBN', 'Published', 'Publisher', 'Place'];
 
 function bookToExportRow(book) {
   return [
@@ -628,8 +775,7 @@ function bookToExportRow(book) {
     book.isbn || '',
     book.published || '',
     book.publisher || '',
-    book.source || '',
-    (book.description || '').replace(/<[^>]*>/g, ''),
+    book.location || '',
   ];
 }
 
@@ -642,21 +788,31 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Exports follow what's on screen: with a place filter active, you get that
+// shelf rather than the whole collection, which is what makes "print a list
+// for one bookcase" possible.
+function exportFilename(extension) {
+  const filter = storage.locationFilter;
+  if (!filter || filter === '__none__') return `my-collection.${extension}`;
+  const slug = filter.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '');
+  return `my-collection-${slug || 'place'}.${extension}`;
+}
+
 function exportXlsx() {
   if (!window.XLSX) { showToast('Export library did not load. Check your connection and try again.'); return; }
-  const rows = [EXPORT_COLUMNS, ...currentLibraryBooks.map(bookToExportRow)];
+  const rows = [EXPORT_COLUMNS, ...visibleBooks().map(bookToExportRow)];
   const sheet = XLSX.utils.aoa_to_sheet(rows);
-  sheet['!cols'] = [{ wch: 20 }, { wch: 32 }, { wch: 24 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 50 }];
+  sheet['!cols'] = [{ wch: 20 }, { wch: 32 }, { wch: 24 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 22 }];
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, 'Books');
-  XLSX.writeFile(workbook, 'my-collection.xlsx');
+  XLSX.writeFile(workbook, exportFilename('xlsx'));
 }
 
 function exportCsv() {
   const escapeCsvCell = value => `"${String(value).replace(/"/g, '""')}"`;
-  const rows = [EXPORT_COLUMNS, ...currentLibraryBooks.map(bookToExportRow)];
+  const rows = [EXPORT_COLUMNS, ...visibleBooks().map(bookToExportRow)];
   const csv = rows.map(row => row.map(escapeCsvCell).join(',')).join('\r\n');
-  downloadBlob(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' }), 'my-collection.csv');
+  downloadBlob(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' }), exportFilename('csv'));
 }
 
 function stopCamera() {
@@ -758,6 +914,10 @@ elements.clearLibrary.addEventListener('click', async () => {
     showToast('Local collection cleared.');
   }
 });
+elements.locationFilter?.addEventListener('change', event => {
+  storage.locationFilter = event.target.value;
+  renderLibrary();
+});
 elements.viewCardsButton.addEventListener('click', () => { storage.libraryView = 'cards'; renderLibrary(); });
 elements.viewSheetButton.addEventListener('click', () => { storage.libraryView = 'sheet'; renderLibrary(); });
 elements.exportXlsxButton.addEventListener('click', exportXlsx);
@@ -783,4 +943,4 @@ document.querySelector('#forgot-password').addEventListener('click', async () =>
 updateConnectionState();
 updateAccountUI();
 if (!firebaseReady) attachLibrarySource();
-archiveReady = loadBookArchive();
+loadBookArchive();

@@ -18,9 +18,6 @@ html { scroll-behavior: smooth; }
 body { margin: 0; min-width: 320px; background: radial-gradient(circle at 87% 5%, #efe6d2 0, transparent 24rem), var(--paper); }
 button, input { font: inherit; }
 button { cursor: pointer; }
-/* Visible to screen readers only. Without this the field's label rendered as
-   literal text inside the ISBN input, stealing space from the input itself. */
-.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .page-shell { width: min(100% - 42px, 1000px); margin: 0 auto; }
 .site-header { min-height: 92px; padding: 14px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--forest); font-size: 16px; font-weight: 700; letter-spacing: -0.3px; text-decoration: none; line-height: 1.15; max-width: 280px; }
@@ -98,3 +95,123 @@ dialog { width: min(100% - 36px, 600px); border: 0; border-radius: 14px; color: 
 @keyframes scan { 0%, 100% { transform: translateY(-35px); } 50% { transform: translateY(35px); } }
 @media (max-width: 620px) { .page-shell { width: min(100% - 28px, 1000px); }.site-header { height: 74px; }.connection-pill { display: none; }.hero { padding: 55px 0 48px; }.scan-card { padding: 28px 20px 25px; }.barcode-decoration { display: none; }.input-row { flex-direction: column; }.input-row .button { min-height: 48px; }.scan-options { grid-template-columns: auto 1fr; }.scan-options p { grid-column: 1 / -1; }.book-result { grid-template-columns: 94px 1fr; gap: 17px; padding: 17px; }.manual-entry { grid-template-columns: 1fr; padding: 20px; }.manual-fields { grid-template-columns: 1fr; }.result-cover { width: 94px; height: 141px; }.result-description { display: none; }.result-actions { flex-wrap: wrap; margin-top: 16px; }.collection-section { padding-top: 60px; }.library-item { grid-template-columns: 42px 1fr; gap: 12px; }.library-cover { width: 42px; height: 57px; }.library-date { grid-column: 2; }.camera-viewfinder { min-height: 290px; } }
 @media (max-width: 380px) { .book-result { grid-template-columns: 1fr; }.result-cover { width: 90px; height: 135px; }.result-details { align-self: start; } }
+
+/* --- Physical places ---------------------------------------------------- */
+
+.location-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0 0.2rem;
+}
+
+.location-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.location-select,
+.location-new-input {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: inherit;
+  max-width: 100%;
+}
+
+.location-select:focus-visible,
+.location-new-input:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.location-new-input {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.location-new-input.hidden {
+  display: none;
+}
+
+/* On a saved card the picker is secondary to the title, so it sits quieter. */
+.library-location {
+  margin: 0.45rem 0 0;
+}
+
+.library-location .location-label {
+  font-size: 0.62rem;
+}
+
+.library-location .location-select {
+  padding: 0.28rem 0.5rem;
+  font-size: 0.82rem;
+  background: transparent;
+  border-color: var(--line);
+}
+
+.library-body {
+  min-width: 0;
+}
+
+.place-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+
+.place-filter svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.65;
+}
+
+.place-filter select {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 0;
+  background: transparent;
+  padding: 0.4rem 0.1rem;
+  color: inherit;
+  max-width: 11rem;
+}
+
+.place-filter select:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-radius: 0.3rem;
+}
+
+.place-filter select[hidden] {
+  display: none;
+}
+
+.sheet-place {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.library-filter-empty {
+  margin: 0;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  background: var(--card);
+}

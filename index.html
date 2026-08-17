@@ -70,6 +70,11 @@
               <h2 id="collection-title">Recently added</h2>
             </div>
             <div class="collection-controls">
+              <label class="place-filter">
+                <span class="sr-only">Filter by place</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11Z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                <select id="location-filter" hidden></select>
+              </label>
               <div class="view-toggle" role="group" aria-label="Collection view">
                 <button id="view-cards" class="view-toggle-button active" type="button">Cards</button>
                 <button id="view-sheet" class="view-toggle-button" type="button">Sheet</button>
