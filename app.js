@@ -49,14 +49,29 @@ const storage = {
   set defaultLocation(value) { localStorage.setItem('bookdrop:default-location', value); },
 };
 
+// --- Copies -------------------------------------------------------------
+
+// A book record holds every physical copy the person owns, each with its own
+// place. Older records predate this and carry a single flat `location`, so
+// they're presented as a one-copy book rather than migrated destructively.
+function bookCopies(book) {
+  if (Array.isArray(book.copies) && book.copies.length) return book.copies;
+  return [{ location: book.location || '', addedAt: book.addedAt }];
+}
+
+function copyCount(book) {
+  return bookCopies(book).length;
+}
+
 // --- Physical locations -------------------------------------------------
 
 // The authoritative list is the union of places the person has named and
-// places actually in use by a book. Deriving the second half means a
+// places actually in use by a copy. Deriving the second half means a
 // signed-in collection carries its locations across devices for free,
 // without needing a second Firestore collection to keep in sync.
 function knownLocations() {
-  const used = currentLibraryBooks.map(book => book.location).filter(Boolean);
+  const used = currentLibraryBooks.flatMap(book =>
+    bookCopies(book).map(copy => copy.location)).filter(Boolean);
   return [...new Set([...storage.locations, ...used])].sort((a, b) => a.localeCompare(b));
 }
 
@@ -473,12 +488,23 @@ function renderResult(book) {
   descriptionEl.hidden = !description;
 
   // Chosen before saving, so a book is shelved the moment it enters the
-  // collection rather than needing a second pass later.
-  activeLocationPicker = buildLocationPicker(book.location || storage.defaultLocation);
-  fragment.querySelector('.result-details').insertBefore(
-    activeLocationPicker.element,
-    fragment.querySelector('.result-actions')
-  );
+  // collection rather than needing a second pass later. A freshly looked-up
+  // book has no place of its own, so it lands wherever the scan card points.
+  activeLocationPicker = buildLocationPicker(storage.defaultLocation);
+  const details = fragment.querySelector('.result-details');
+  details.insertBefore(activeLocationPicker.element, fragment.querySelector('.result-actions'));
+
+  // Scanning something already owned is ambiguous from the person's side, so
+  // say plainly that this will become an extra copy rather than a duplicate.
+  const owned = currentLibraryBooks.find(entry => entry.isbn === book.isbn);
+  if (owned) {
+    const note = document.createElement('p');
+    note.className = 'already-owned';
+    const n = copyCount(owned);
+    note.textContent = `Already on your shelf (${n} ${n === 1 ? 'copy' : 'copies'}). Saving adds another.`;
+    details.insertBefore(note, activeLocationPicker.element);
+    fragment.querySelector('.save-book').textContent = 'Add another copy';
+  }
   fragment.querySelector('.save-book').addEventListener('click', saveActiveBook);
   fragment.querySelector('.find-another').addEventListener('click', () => { elements.resultSection.classList.add('hidden'); elements.isbnInput.select(); });
   const cobissLink = document.createElement('a');
@@ -642,16 +668,30 @@ function renderManualEntry(isbn) {
 
 async function saveActiveBook() {
   if (!activeBook) return;
-  const existing = currentLibraryBooks.find(book => book.isbn === activeBook.isbn);
-  if (existing) { showToast('That edition is already in your collection.'); return; }
   const location = activeLocationPicker ? activeLocationPicker.value() : '';
-  const book = { ...activeBook, location, addedAt: new Date().toISOString() };
+  const existing = currentLibraryBooks.find(book => book.isbn === activeBook.isbn);
+
+  // Scanning a book already on the shelf means a second physical copy, not a
+  // mistake — a duplicate edition is a normal thing to own.
+  if (existing) {
+    document.querySelector('.save-book')?.setAttribute('disabled', '');
+    const copies = [...bookCopies(existing), { location, addedAt: new Date().toISOString() }];
+    await persistCopies(existing, copies);
+    showToast(`Added a second home for this title — you now have ${copies.length} copies.`);
+    return;
+  }
+
+  const book = {
+    ...activeBook,
+    copies: [{ location, addedAt: new Date().toISOString() }],
+    addedAt: new Date().toISOString(),
+  };
   // Remember this edition locally so the same barcode is matched instantly next time,
   // regardless of whether it came from a direct match, a title search, or manual entry,
   // and regardless of whether the person is signed in.
   // The catalogue is a bibliographic cache shared by every future scan, so
   // the personal shelf placement is deliberately left out of it.
-  const { location: _shelf, addedAt: _added, ...bibliographic } = book;
+  const { copies: _copies, location: _shelf, addedAt: _added, ...bibliographic } = book;
   storage.catalogue = { ...storage.catalogue, [book.isbn]: bibliographic };
   document.querySelector('.save-book')?.setAttribute('disabled', '');
 
@@ -672,25 +712,133 @@ async function saveActiveBook() {
   showToast(currentUser ? 'Saved to your account — it will follow you on any device.' : 'Saved to your local collection. Sign in to keep it on every device.');
 }
 
-// Moves a book to a different place, in whichever store is currently backing
-// the collection. Returns once the change is durable.
-async function updateBookLocation(book, location) {
+// Writes a whole copies array back to whichever store is currently backing
+// the collection. Removing the last copy removes the book itself, since a
+// title with no physical copies isn't on the shelf any more.
+async function persistCopies(book, copies) {
   if (currentUser && firebaseReady && book.id) {
+    const ref = db.collection('users').doc(currentUser.uid).collection('books').doc(book.id);
     try {
-      await db.collection('users').doc(currentUser.uid).collection('books')
-        .doc(book.id).update({ location });
+      if (copies.length === 0) await ref.delete();
+      // `location` is cleared so an older client can't resurrect a stale place.
+      else await ref.update({ copies, location: firebase.firestore.FieldValue.delete() });
       // onSnapshot re-renders for us.
     } catch (error) {
-      showToast('Could not move that book. Please try again.');
+      showToast('Could not update that book. Please try again.');
     }
     return;
   }
-  storage.books = storage.books.map(entry =>
-    entry.isbn === book.isbn && entry.addedAt === book.addedAt
-      ? { ...entry, location }
-      : entry);
+  storage.books = copies.length === 0
+    ? storage.books.filter(entry => entry.isbn !== book.isbn)
+    : storage.books.map(entry => {
+        if (entry.isbn !== book.isbn) return entry;
+        const { location: _drop, ...rest } = entry;
+        return { ...rest, copies };
+      });
   currentLibraryBooks = storage.books;
   renderLibrary();
+}
+
+function updateCopyLocation(book, index, location) {
+  const copies = bookCopies(book).map((copy, i) =>
+    i === index ? { ...copy, location } : copy);
+  return persistCopies(book, copies);
+}
+
+function removeCopy(book, index) {
+  const copies = bookCopies(book).filter((_, i) => i !== index);
+  return persistCopies(book, copies);
+}
+
+// Removes the title and every copy of it. Destructive and not undoable, so it
+// always asks first, and says how many copies are about to go.
+async function deleteBook(book) {
+  const copies = copyCount(book);
+  const what = copies > 1 ? `“${book.title}” and all ${copies} copies` : `“${book.title}”`;
+  if (!confirm(`Remove ${what} from your collection?`)) return;
+  await persistCopies(book, []);
+  showToast('Removed from your collection.');
+}
+
+// Renders the copies of one book as a horizontally swipeable strip: one panel
+// per physical copy, each with its own place. Scroll snapping makes each panel
+// settle into view rather than stopping halfway between two.
+function buildCopiesStrip(book) {
+  const copies = bookCopies(book);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'copies';
+
+  const track = document.createElement('div');
+  track.className = 'copies-track';
+
+  copies.forEach((copy, index) => {
+    const panel = document.createElement('div');
+    panel.className = 'copy-panel';
+
+    const head = document.createElement('div');
+    head.className = 'copy-head';
+    const badge = document.createElement('span');
+    badge.className = 'copy-badge';
+    badge.textContent = copies.length > 1
+      ? `Copy ${index + 1} of ${copies.length}`
+      : 'One copy';
+    head.append(badge);
+
+    // Only meaningful with more than one copy; removing the title as a whole
+    // is the × on the card, so the two actions can't be confused.
+    if (copies.length > 1) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'copy-remove';
+      remove.textContent = 'Remove this copy';
+      remove.setAttribute('aria-label', `Remove copy ${index + 1} of ${book.title}`);
+      remove.addEventListener('click', () => removeCopy(book, index));
+      head.append(remove);
+    }
+
+    const picker = buildLocationPicker(copy.location || '', { label: 'Kept in' });
+    picker.element.classList.add('library-location');
+    picker.element.querySelector('.location-select').addEventListener('change', event => {
+      if (event.target.value !== NEW_LOCATION_VALUE) updateCopyLocation(book, index, event.target.value);
+    });
+    const input = picker.element.querySelector('.location-new-input');
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') updateCopyLocation(book, index, picker.value());
+    });
+    input.addEventListener('blur', () => {
+      const value = picker.value();
+      if (value) updateCopyLocation(book, index, value);
+    });
+
+    panel.append(head, picker.element);
+    track.append(panel);
+  });
+
+  wrapper.append(track);
+
+  // Dots are only meaningful once there is somewhere to swipe to.
+  if (copies.length > 1) {
+    const dots = document.createElement('div');
+    dots.className = 'copy-dots';
+    copies.forEach((_, index) => {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'copy-dot' + (index === 0 ? ' active' : '');
+      dot.setAttribute('aria-label', `Show copy ${index + 1}`);
+      dot.addEventListener('click', () => {
+        track.scrollTo({ left: track.clientWidth * index, behavior: 'smooth' });
+      });
+      dots.append(dot);
+    });
+    track.addEventListener('scroll', () => {
+      const current = Math.round(track.scrollLeft / track.clientWidth);
+      dots.querySelectorAll('.copy-dot').forEach((dot, index) =>
+        dot.classList.toggle('active', index === current));
+    }, { passive: true });
+    wrapper.append(dots);
+  }
+
+  return wrapper;
 }
 
 function renderLocationFilter() {
@@ -709,8 +857,28 @@ function renderLocationFilter() {
 function visibleBooks() {
   const filter = storage.locationFilter;
   if (!filter) return currentLibraryBooks;
-  if (filter === '__none__') return currentLibraryBooks.filter(book => !book.location);
-  return currentLibraryBooks.filter(book => book.location === filter);
+  // A title stays visible when any one of its copies is in the chosen place.
+  if (filter === '__none__') {
+    return currentLibraryBooks.filter(book => bookCopies(book).some(copy => !copy.location));
+  }
+  return currentLibraryBooks.filter(book =>
+    bookCopies(book).some(copy => copy.location === filter));
+}
+
+// One entry per physical copy, for the views where a copy is the unit: the
+// spreadsheet and the exports, where counting books on a shelf is the point.
+function visibleCopyRows() {
+  const filter = storage.locationFilter;
+  return currentLibraryBooks.flatMap(book => {
+    const copies = bookCopies(book);
+    return copies
+      .map((copy, index) => ({ book, copy, index, total: copies.length }))
+      .filter(({ copy }) => {
+        if (!filter) return true;
+        if (filter === '__none__') return !copy.location;
+        return copy.location === filter;
+      });
+  });
 }
 
 function renderLibrary() {
@@ -737,18 +905,20 @@ function renderLibrary() {
       elements.libraryList.after(elements.sheetWrapper);
     }
     elements.sheetWrapper.classList.remove('hidden');
-    elements.sheetWrapper.innerHTML = books.length === 0 ? '' : `
+    const rows = visibleCopyRows();
+    elements.sheetWrapper.innerHTML = rows.length === 0 ? '' : `
       <table class="sheet-table">
-        <thead><tr><th>Added</th><th>Title</th><th>Author(s)</th><th>ISBN</th><th>Published</th><th>Publisher</th><th>Place</th></tr></thead>
-        <tbody>${books.map(book => `
+        <thead><tr><th>Added</th><th>Title</th><th>Author(s)</th><th>ISBN</th><th>Published</th><th>Publisher</th><th>Copy</th><th>Place</th></tr></thead>
+        <tbody>${rows.map(({ book, copy, index, total }) => `
           <tr>
-            <td>${new Date(book.addedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+            <td>${new Date(copy.addedAt || book.addedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
             <td class="sheet-title">${escapeHtml(book.title)}</td>
             <td>${escapeHtml(book.authors)}</td>
             <td class="sheet-isbn">${escapeHtml(book.isbn || '')}</td>
             <td>${escapeHtml(book.published || '')}</td>
             <td>${escapeHtml(book.publisher || '')}</td>
-            <td class="sheet-place">${escapeHtml(book.location || '—')}</td>
+            <td class="sheet-copy">${total > 1 ? `${index + 1} / ${total}` : '1'}</td>
+            <td class="sheet-place">${escapeHtml(copy.location || '—')}</td>
           </tr>`).join('')}</tbody>
       </table>`;
     return;
@@ -770,46 +940,49 @@ function renderLibrary() {
   }
 
   elements.libraryList.replaceChildren(...books.map(book => {
+    const copies = copyCount(book);
     const item = document.createElement('article');
     item.className = 'library-item';
     item.innerHTML = `
       <img class="library-cover" src="${bookCover(book)}" alt="" />
       <div class="library-body">
-        <h3 class="library-title">${escapeHtml(book.title)}</h3>
+        <h3 class="library-title">${escapeHtml(book.title)}${copies > 1 ? `<span class="copy-count">×${copies}</span>` : ''}</h3>
         <p class="library-author">${escapeHtml(book.authors)}</p>
       </div>
-      <time class="library-date" datetime="${book.addedAt}">${new Date(book.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>`;
+      <div class="library-aside">
+        <time class="library-date" datetime="${book.addedAt}">${new Date(book.addedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
+      </div>`;
 
-    // Books move around in real life, so the place has to stay editable
-    // rather than being fixed at the moment of saving.
-    const picker = buildLocationPicker(book.location || '', { label: 'Kept in' });
-    picker.element.classList.add('library-location');
-    picker.element.querySelector('.location-select').addEventListener('change', event => {
-      if (event.target.value !== NEW_LOCATION_VALUE) updateBookLocation(book, event.target.value);
-    });
-    picker.element.querySelector('.location-new-input').addEventListener('keydown', event => {
-      if (event.key === 'Enter') updateBookLocation(book, picker.value());
-    });
-    picker.element.querySelector('.location-new-input').addEventListener('blur', () => {
-      const value = picker.value();
-      if (value) updateBookLocation(book, value);
-    });
-    item.querySelector('.library-body').append(picker.element);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'library-delete';
+    remove.innerHTML = '<span aria-hidden="true">×</span>';
+    remove.title = 'Remove from collection';
+    remove.setAttribute('aria-label', `Remove ${book.title} from your collection`);
+    remove.addEventListener('click', () => deleteBook(book));
+    item.querySelector('.library-aside').append(remove);
+
+    // Copies move around independently in real life, so each keeps its own
+    // editable place rather than the title having a single fixed one.
+    item.querySelector('.library-body').append(buildCopiesStrip(book));
     return item;
   }));
 }
 
-const EXPORT_COLUMNS = ['Added at', 'Title', 'Author(s)', 'ISBN', 'Published', 'Publisher', 'Place'];
+const EXPORT_COLUMNS = ['Added at', 'Title', 'Author(s)', 'ISBN', 'Published', 'Publisher', 'Copy', 'Place'];
 
-function bookToExportRow(book) {
+// A row per physical copy, so the sheet totals match what is actually on the
+// shelves rather than counting distinct titles.
+function copyRowToExportRow({ book, copy, index, total }) {
   return [
-    new Date(book.addedAt).toISOString(),
+    new Date(copy.addedAt || book.addedAt).toISOString(),
     book.title || '',
     book.authors || '',
     book.isbn || '',
     book.published || '',
     book.publisher || '',
-    book.location || '',
+    total > 1 ? `${index + 1} of ${total}` : '1',
+    copy.location || '',
   ];
 }
 
@@ -834,9 +1007,9 @@ function exportFilename(extension) {
 
 function exportXlsx() {
   if (!window.XLSX) { showToast('Export library did not load. Check your connection and try again.'); return; }
-  const rows = [EXPORT_COLUMNS, ...visibleBooks().map(bookToExportRow)];
+  const rows = [EXPORT_COLUMNS, ...visibleCopyRows().map(copyRowToExportRow)];
   const sheet = XLSX.utils.aoa_to_sheet(rows);
-  sheet['!cols'] = [{ wch: 20 }, { wch: 32 }, { wch: 24 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 22 }];
+  sheet['!cols'] = [{ wch: 20 }, { wch: 32 }, { wch: 24 }, { wch: 15 }, { wch: 12 }, { wch: 20 }, { wch: 9 }, { wch: 22 }];
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, 'Books');
   XLSX.writeFile(workbook, exportFilename('xlsx'));
@@ -844,7 +1017,7 @@ function exportXlsx() {
 
 function exportCsv() {
   const escapeCsvCell = value => `"${String(value).replace(/"/g, '""')}"`;
-  const rows = [EXPORT_COLUMNS, ...visibleBooks().map(bookToExportRow)];
+  const rows = [EXPORT_COLUMNS, ...visibleCopyRows().map(copyRowToExportRow)];
   const csv = rows.map(row => row.map(escapeCsvCell).join(',')).join('\r\n');
   downloadBlob(new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' }), exportFilename('csv'));
 }
