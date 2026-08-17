@@ -43,17 +43,38 @@ let toastTimer = null;
 let zxingControls = null;
 let bookArchive = {};
 
+// Every network call goes through this wrapper. Without a timeout a single
+// unresponsive host (Open Library and Google Books are both third parties we
+// don't control) leaves the awaiting promise pending forever, which used to
+// freeze the "Find book" button on "Searching…" with no way to recover.
+const REQUEST_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(url, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Loaded once at startup: a large ISBN-keyed catalogue of Bulgarian editions
 // (from the uploaded Book-archive-Knigohodets file) so those titles are
 // recognised instantly, without depending on Google Books/Open Library.
+// The promise is kept so a lookup started while the ~3 MB file is still
+// downloading waits for it instead of silently skipping the archive and
+// falling through to the (much worse) public-catalogue lookups.
+let archiveReady = null;
+
 async function loadBookArchive() {
   try {
-    const response = await fetch('./book-archive.json');
+    const response = await fetchWithTimeout('./book-archive.json', 30000);
     if (!response.ok) return;
     bookArchive = await response.json();
     updateConnectionState();
   } catch (error) {
-    // Archive is an enhancement, not a requirement — silently continue without it.
+    // Archive is an enhancement, not a requirement — continue without it.
   }
 }
 
@@ -291,6 +312,11 @@ async function lookupBook() {
   elements.resultSection.classList.add('hidden');
 
   try {
+    // Wait for the local archive if it is still downloading, so a scan made
+    // seconds after page load still matches against those thousands of
+    // Bulgarian editions rather than falling through to the network.
+    await archiveReady;
+
     for (const candidate of candidates) {
       // The bulk local archive (thousands of Bulgarian editions) is checked
       // first — instant, no network. Local catalogue and the small regional
@@ -312,7 +338,7 @@ async function lookupBook() {
 
 async function fetchGoogleBook(isbn) {
   try {
-    const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
+    const response = await fetchWithTimeout(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
     // Public Google Books lookups can be temporarily rate-limited. In that
     // case (or if its response is unavailable), use Open Library instead.
     if (!response.ok) return null;
@@ -334,7 +360,7 @@ async function fetchGoogleBook(isbn) {
 }
 
 async function fetchOpenLibraryBook(isbn) {
-  const response = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`);
+  const response = await fetchWithTimeout(`https://openlibrary.org/api/books?bibkeys=ISBN:${encodeURIComponent(isbn)}&format=json&jscmd=data`);
   if (!response.ok) throw new Error('lookup-failed');
   const info = (await response.json())[`ISBN:${isbn}`];
   if (!info) return null;
@@ -457,7 +483,7 @@ async function fetchOpenLibraryByTitle(title, authors) {
   try {
     const params = new URLSearchParams({ title, limit: '5' });
     if (authors) params.set('author', authors);
-    const response = await fetch(`https://openlibrary.org/search.json?${params}`);
+    const response = await fetchWithTimeout(`https://openlibrary.org/search.json?${params}`);
     if (!response.ok) return [];
     const data = await response.json();
     return (data.docs || []).map(doc => ({
@@ -475,7 +501,7 @@ async function fetchOpenLibraryByTitle(title, authors) {
 async function fetchGoogleByTitle(title, authors) {
   try {
     const query = `intitle:${title}${authors ? `+inauthor:${authors}` : ''}`;
-    const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5`);
+    const response = await fetchWithTimeout(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5`);
     if (!response.ok) return [];
     const data = await response.json();
     return (data.items || []).map(item => {
@@ -757,4 +783,4 @@ document.querySelector('#forgot-password').addEventListener('click', async () =>
 updateConnectionState();
 updateAccountUI();
 if (!firebaseReady) attachLibrarySource();
-loadBookArchive();
+archiveReady = loadBookArchive();
