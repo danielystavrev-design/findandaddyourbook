@@ -43,6 +43,9 @@ async function get(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    if (typeof fetch !== 'function') {
+      return { ok: false, status: 'no-fetch-in-runtime', text: '' };
+    }
     const response = await fetch(url, {
       headers: {
         'User-Agent': USER_AGENT,
@@ -54,7 +57,12 @@ async function get(url) {
     if (!response.ok) return { ok: false, status: response.status, text: '' };
     return { ok: true, status: response.status, text: await response.text() };
   } catch (error) {
-    return { ok: false, status: error.name === 'AbortError' ? 'timeout' : 'network', text: '' };
+    // Връщаме истинската грешка, иначе всичко изглежда еднакво като „network“.
+    return {
+      ok: false,
+      status: `${error.name}: ${error.message}${error.cause ? ' | ' + error.cause.message : ''}`,
+      text: '',
+    };
   } finally {
     clearTimeout(timer);
   }
