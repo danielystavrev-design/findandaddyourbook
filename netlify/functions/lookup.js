@@ -19,8 +19,9 @@ const SEARCH_CANDIDATES = [
 
 // Честно се представяме, вместо да се маскираме като браузър. Ако някой от
 // Озон погледне логовете си, трябва да вижда какво е това и кой стои зад него.
+// Задължително само ASCII: HTTP заглавките не приемат кирилица.
 const USER_AGENT =
-  'FindAndAddYourBook/1.0 (личен каталог на книги; +https://dulcet-kelpie-972af5.netlify.app)';
+  'FindAndAddYourBook/1.0 (personal book catalogue; +https://dulcet-kelpie-972af5.netlify.app)';
 
 const TIMEOUT_MS = 8000;
 
