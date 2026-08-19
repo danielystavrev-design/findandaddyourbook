@@ -417,7 +417,13 @@ async function lookupBook() {
       // The bulk local archive (thousands of Bulgarian editions) is checked
       // first — instant, no network. Local catalogue and the small regional
       // cache come next; Open Library and Google Books are the network fallback.
-      let book = bookArchive[candidate] || storage.catalogue[candidate] || regionalEditionCache[candidate] || await fetchOpenLibraryBook(candidate);
+      let book = bookArchive[candidate] || storage.catalogue[candidate] || regionalEditionCache[candidate];
+      // Helikon comes before the international sources: it is a Bulgarian
+      // catalogue, so for recent local editions it answers where Open Library
+      // and Google Books usually don't. Its results are cached below, so any
+      // one barcode reaches their servers at most once.
+      if (!book) book = await fetchHelikonBook(candidate);
+      if (!book) book = await fetchOpenLibraryBook(candidate);
       if (!book) book = await fetchGoogleBook(candidate);
       if (book) {
         activeBook = { ...book, isbn: candidate };
@@ -430,6 +436,41 @@ async function lookupBook() {
     renderSearchByTitle(isbn);
     showToast('This edition was not in a public catalogue automatically. Search by title or add it once.');
   } finally { setLookupLoading(false); }
+}
+
+// Goes through our own Netlify function rather than helikon.bg directly:
+// the browser would block a cross-origin request, and routing it server-side
+// also lets one shared cache serve everyone instead of each visitor asking.
+async function fetchHelikonBook(isbn) {
+  // Own deadline, slightly above the function's: a stalled request must not
+  // hold up Open Library and Google Books, which may well have the book.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`/.netlify/functions/lookup?isbn=${encodeURIComponent(isbn)}`,
+      { signal: controller.signal });
+    if (!response.ok) return null;          // 404 simply means "not stocked"
+    const data = await response.json();
+    if (!data || !data.found) return null;
+
+    const book = {
+      title: data.title || 'Untitled',
+      authors: data.authors || 'Unknown author',
+      published: data.published || '',
+      publisher: data.publisher || '',
+      description: data.description || '',
+      pages: data.pages || '',
+      cover: data.cover || '',
+    };
+    // Cached locally so a repeat scan of the same book never leaves the device.
+    storage.catalogue = { ...storage.catalogue, [isbn]: book };
+    return book;
+  } catch {
+    // Offline, timed out, or the function is unavailable — fall through.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchGoogleBook(isbn) {
