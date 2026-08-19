@@ -1063,6 +1063,164 @@ function renderLibrary() {
   }));
 }
 
+// --- Import --------------------------------------------------------------
+
+// Column headings are matched loosely so a sheet exported from this app, a
+// spreadsheet kept by hand, or a Bulgarian-labelled file all work without the
+// person having to rename anything first.
+const IMPORT_FIELDS = {
+  isbn: ['isbn', 'isbn13', 'ean', 'barcode', 'баркод', 'исбн'],
+  title: ['title', 'заглавие', 'name', 'книга'],
+  authors: ['author(s)', 'authors', 'author', 'автор', 'автори'],
+  published: ['published', 'year', 'година', 'година на издаване'],
+  publisher: ['publisher', 'издател', 'издателство'],
+  pages: ['pages', 'страници', 'брой страници'],
+  location: ['place', 'location', 'място', 'място', 'рафт'],
+  addedAt: ['added at', 'added', 'date added', 'дата', 'добавена'],
+};
+
+function mapHeaders(headerRow) {
+  const map = {};
+  headerRow.forEach((raw, index) => {
+    const key = String(raw || '').trim().toLowerCase();
+    if (!key) return;
+    for (const [field, aliases] of Object.entries(IMPORT_FIELDS)) {
+      if (map[field] === undefined && aliases.includes(key)) map[field] = index;
+    }
+  });
+  return map;
+}
+
+/**
+ * Turns sheet rows into books. Rows sharing an ISBN become copies of one
+ * book rather than separate entries, which is what makes a file exported
+ * from this app — one row per physical copy — survive a round trip.
+ */
+function rowsToBooks(rows) {
+  if (!rows.length) return { books: [], skipped: [], rowCount: 0 };
+  const map = mapHeaders(rows[0]);
+  if (map.isbn === undefined) return { books: [], skipped: [], rowCount: 0, noIsbnColumn: true };
+
+  const byIsbn = new Map();
+  const skipped = [];
+  const cell = (row, field) => map[field] === undefined ? '' : String(row[map[field]] ?? '').trim();
+
+  rows.slice(1).forEach((row, index) => {
+    if (!row || row.every(value => value === '' || value === null || value === undefined)) return;
+    const isbn = normalizeIsbn(cell(row, 'isbn'));
+    const title = cell(row, 'title');
+
+    // Identity in this collection is the barcode, so a row without a usable
+    // one is reported rather than silently turned into an unreachable entry.
+    if (!isbn || !(isValidIsbn13(isbn) || isValidIsbn10(isbn))) {
+      skipped.push({ row: index + 2, reason: isbn ? 'invalid barcode' : 'no barcode', title });
+      return;
+    }
+
+    const copy = {
+      location: cell(row, 'location'),
+      addedAt: parseImportedDate(cell(row, 'addedAt')),
+    };
+
+    if (byIsbn.has(isbn)) {
+      byIsbn.get(isbn).copies.push(copy);
+      return;
+    }
+    byIsbn.set(isbn, {
+      isbn,
+      title: title || 'Untitled',
+      authors: cell(row, 'authors'),
+      published: cell(row, 'published'),
+      publisher: cell(row, 'publisher'),
+      pages: cell(row, 'pages'),
+      copies: [copy],
+      addedAt: copy.addedAt,
+    });
+  });
+
+  return { books: [...byIsbn.values()], skipped, rowCount: rows.length - 1 };
+}
+
+// Spreadsheets hand back dates as text, as Date objects, or as Excel serial
+// numbers depending on how the file was made; anything unreadable falls back
+// to now rather than producing an "Invalid Date" in the collection.
+function parseImportedDate(value) {
+  if (!value) return new Date().toISOString();
+  const text = String(value).trim();
+
+  // Serial numbers are tested first: new Date("46235") does not fail, it reads
+  // the digits as a year, so leaving this until after would silently produce
+  // dates tens of thousands of years away.
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    const serial = Number(text);
+    if (serial > 0 && serial < 100000) {
+      return new Date(Date.UTC(1899, 11, 30) + serial * 86400000).toISOString();
+    }
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  return new Date().toISOString();
+}
+
+async function importFromFile(file) {
+  if (!window.XLSX) { showToast('Import library did not load. Check your connection and try again.'); return; }
+  let parsed;
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+    const workbook = XLSX.read(data, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, raw: false });
+    parsed = rowsToBooks(rows);
+  } catch {
+    showToast('That file could not be read. A .csv or .xlsx export works best.');
+    return;
+  }
+
+  if (parsed.noIsbnColumn) {
+    showToast('No ISBN or barcode column found. The file needs one to match books.');
+    return;
+  }
+  if (!parsed.books.length) {
+    showToast('No books with a usable barcode were found in that file.');
+    return;
+  }
+
+  // Books already on the shelf are left untouched, so importing the same file
+  // twice doesn't quietly double every copy count.
+  const existing = new Set(currentLibraryBooks.map(book => book.isbn));
+  const fresh = parsed.books.filter(book => !existing.has(book.isbn));
+  const duplicates = parsed.books.length - fresh.length;
+
+  const lines = [`Found ${parsed.books.length} book(s) in that file.`];
+  if (duplicates) lines.push(`${duplicates} already in your collection and will be left as they are.`);
+  if (parsed.skipped.length) lines.push(`${parsed.skipped.length} row(s) had no usable barcode and will be skipped.`);
+  if (!fresh.length) { showToast('Every book in that file is already in your collection.'); return; }
+  lines.push(`Add the remaining ${fresh.length}?`);
+  if (!confirm(lines.join('\n'))) return;
+
+  try {
+    if (currentUser && firebaseReady) {
+      const collection = db.collection('users').doc(currentUser.uid).collection('books');
+      // Firestore caps a batch at 500 writes, so large imports go in chunks.
+      for (let start = 0; start < fresh.length; start += 400) {
+        const batch = db.batch();
+        fresh.slice(start, start + 400).forEach(book => batch.set(collection.doc(), book));
+        await batch.commit();
+      }
+    } else {
+      storage.books = [...fresh, ...storage.books];
+      currentLibraryBooks = storage.books;
+      renderLibrary();
+    }
+    showToast(`Added ${fresh.length} book(s) to your collection.`);
+  } catch {
+    showToast('Could not save the imported books. Please try again.');
+  }
+}
+
+// --- Export --------------------------------------------------------------
+
 const EXPORT_COLUMNS = ['Added at', 'Title', 'Author(s)', 'ISBN', 'Published', 'Publisher', 'Copy', 'Place'];
 
 // A row per physical copy, so the sheet totals match what is actually on the
@@ -1225,6 +1383,14 @@ elements.exportXlsxButton.addEventListener('click', exportXlsx);
 elements.exportCsvButton.addEventListener('click', exportCsv);
 elements.openAccountButton.addEventListener('click', () => { elements.accountError.classList.add('hidden'); elements.accountDialog.showModal(); });
 document.querySelector('#close-account').addEventListener('click', () => elements.accountDialog.close());
+document.querySelector('#import-button').addEventListener('click', () =>
+  document.querySelector('#import-file').click());
+document.querySelector('#import-file').addEventListener('change', async event => {
+  const [file] = event.target.files;
+  if (file) await importFromFile(file);
+  // Cleared so choosing the same file again still fires a change event.
+  event.target.value = '';
+});
 document.querySelector('#google-sign-in').addEventListener('click', handleGoogleSignIn);
 document.querySelector('#sign-in-button').addEventListener('click', () => handleAuthAction('signIn'));
 document.querySelector('#sign-up-button').addEventListener('click', () => handleAuthAction('signUp'));
