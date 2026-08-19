@@ -1,29 +1,24 @@
 /**
- * Търси книга в Ozone.bg по баркод и връща метаданните ѝ като JSON.
+ * Търси книга в Helikon.bg по баркод и връща метаданните ѝ като JSON.
  *
- * Работи като прокси: браузърът не може да пита ozone.bg директно (CORS),
+ * Работи като прокси: браузърът не може да пита helikon.bg директно (CORS),
  * но тази функция върви на сървъра на Netlify, където CORS не важи.
  *
- * ПРЕДИ УПОТРЕБА:
- *   Отвори https://www.ozone.bg/robots.txt и провери дали /product/ и
- *   търсенето са разрешени. Ако са забранени — не пускай това.
+ * Защо Хеликон, а не Озон: страниците на Хеликон се рендират сървърно и
+ * носят ISBN в мета таг <meta property="books:isbn">. При Озон резултатите
+ * от търсенето се рисуват с JavaScript от външна платена услуга, тоест не
+ * се виждат при обикновено теглене.
  */
 
-// Ozone върви на Magento, чийто стандартен път за търсене е catalogsearch.
-// Пробваме ги подред, защото сайтът има и добавка InstantSearch+.
-const SEARCH_CANDIDATES = [
-  q => `https://www.ozone.bg/catalogsearch/result/?q=${encodeURIComponent(q)}`,
-  q => `https://www.ozone.bg/instantsearchplus/result/?q=${encodeURIComponent(q)}`,
-  q => `https://www.ozone.bg/search/?q=${encodeURIComponent(q)}`,
-];
+const SEARCH_URL = q => `https://www.helikon.bg/search/?q=${encodeURIComponent(q)}`;
 
-// Честно се представяме, вместо да се маскираме като браузър. Ако някой от
-// Озон погледне логовете си, трябва да вижда какво е това и кой стои зад него.
+// Честно се представяме, вместо да се маскираме като браузър.
 // Задължително само ASCII: HTTP заглавките не приемат кирилица.
 const USER_AGENT =
   'FindAndAddYourBook/1.0 (personal book catalogue; +https://dulcet-kelpie-972af5.netlify.app)';
 
 const TIMEOUT_MS = 8000;
+const MAX_CANDIDATES = 5;
 
 // --- ISBN проверка -------------------------------------------------------
 
@@ -44,9 +39,6 @@ async function get(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    if (typeof fetch !== 'function') {
-      return { ok: false, status: 'no-fetch-in-runtime', text: '' };
-    }
     const response = await fetch(url, {
       headers: {
         'User-Agent': USER_AGENT,
@@ -58,7 +50,6 @@ async function get(url) {
     if (!response.ok) return { ok: false, status: response.status, text: '' };
     return { ok: true, status: response.status, text: await response.text() };
   } catch (error) {
-    // Връщаме истинската грешка, иначе всичко изглежда еднакво като „network“.
     return {
       ok: false,
       status: `${error.name}: ${error.message}${error.cause ? ' | ' + error.cause.message : ''}`,
@@ -79,55 +70,76 @@ const strip = html => html
   .replace(/&#039;|&apos;/g, "'")
   .replace(/&lt;/g, '<')
   .replace(/&gt;/g, '>')
+  .replace(/&hellip;/g, '…')
+  .replace(/&laquo;|&bdquo;/g, '„')
+  .replace(/&raquo;|&ldquo;/g, '“')
   .replace(/\s+/g, ' ')
   .trim();
 
-/**
- * Изважда стойност от таблицата „Всички характеристики“, където редовете са
- * <th>Име</th><td>Стойност</td> или подобна двойка клетки.
- */
-function tableValue(html, label) {
-  const pattern = new RegExp(
-    `<t[hd][^>]*>\\s*${label}\\s*:?\\s*</t[hd]>\\s*<t[hd][^>]*>([\\s\\S]*?)</t[hd]>`,
-    'i');
-  const match = html.match(pattern);
-  return match ? strip(match[1]) : '';
+/** Чете <meta property="..." content="..."> в който и да е ред на атрибутите. */
+function metaContent(html, property) {
+  const patterns = [
+    new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]*content=["']([^"']*)["']`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${property}["']`, 'i'),
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) return strip(match[1]);
+  }
+  return '';
 }
 
-function metaContent(html, property) {
-  const pattern = new RegExp(
-    `<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']*)["']`, 'i');
-  const match = html.match(pattern);
-  return match ? strip(match[1]) : '';
+/** Чете стойност от таблицата с характеристики по надписа в лявата клетка. */
+function tableValue(html, label) {
+  const patterns = [
+    new RegExp(`>\\s*${label}\\s*<\\/t[dh]>\\s*<t[dh][^>]*>([\\s\\S]*?)<\\/t[dh]>`, 'i'),
+    new RegExp(`${label}\\s*<\\/[^>]+>\\s*<[^>]+>([\\s\\S]{0,300}?)<\\/`, 'i'),
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) {
+      const value = strip(match[1]);
+      if (value) return value;
+    }
+  }
+  return '';
+}
+
+/** Авторът стои като връзка към страницата му. */
+function authorFrom(html) {
+  const matches = [...html.matchAll(
+    /<a[^>]+href=["']https:\/\/www\.helikon\.bg\/author\/[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  const names = [...new Set(matches.map(m => strip(m[1])).filter(Boolean))];
+  return names.join(', ');
 }
 
 function parseProduct(html) {
-  const title = metaContent(html, 'og:title')
-    || strip((html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || '');
-
   return {
-    title,
-    authors: tableValue(html, 'Автор'),
-    publisher: tableValue(html, 'Издателство'),
-    published: tableValue(html, 'Година'),
+    title: metaContent(html, 'og:title').replace(/\s*\|\s*Цена.*$/i, '').trim(),
+    authors: authorFrom(html),
+    publisher: tableValue(html, 'Издател'),
+    published: tableValue(html, 'Година на издаване'),
     pages: tableValue(html, 'Брой страници'),
-    binding: tableValue(html, 'Издание'),
+    binding: tableValue(html, 'Корици'),
     language: tableValue(html, 'Език'),
-    series: tableValue(html, 'Колекция'),
     cover: metaContent(html, 'og:image'),
-    description: metaContent(html, 'og:description'),
-    // И двете полета се срещат; „Баркод“ е по-надеждно налично от „ISBN“.
+    description: metaContent(html, 'og:description').replace(/\s*\|\s*Цена.*$/i, '').trim(),
+    // Мета тагът е най-надеждният източник; таблицата служи за подсигуряване.
+    isbn: normalise(metaContent(html, 'books:isbn')) || normalise(tableValue(html, 'ISBN')),
     barcode: normalise(tableValue(html, 'Баркод')),
-    isbnField: normalise(tableValue(html, 'ISBN')),
   };
 }
 
-/** Извлича адресите на продуктови страници от резултатите на търсенето. */
-function productLinks(html, limit = 5) {
+/**
+ * Адресите на книгите са вида helikon.bg/253830-Заглавие.html — числото
+ * отпред ги отличава от /author/, /publisher/ и /books/, чиито пътища
+ * започват с дума. Плъзгачите могат да съдържат наклонени черти и двоеточия.
+ */
+function productLinks(html, limit = MAX_CANDIDATES) {
   const found = new Set();
-  const pattern = /href=["'](https:\/\/www\.ozone\.bg\/product\/[^"'?#]+)["']/gi;
+  const pattern = /https:\/\/www\.helikon\.bg\/\d+-[^"'\s>]*?\.html/gi;
   let match;
-  while ((match = pattern.exec(html)) && found.size < limit) found.add(match[1]);
+  while ((match = pattern.exec(html)) && found.size < limit) found.add(match[0]);
   return [...found];
 }
 
@@ -136,55 +148,49 @@ function productLinks(html, limit = 5) {
 exports.handler = async function (event) {
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
-    // Кешираме на ръба на Netlify: същият баркод не тръгва пак към Озон
-    // цяло денонощие, дори да го поискат сто души.
-    'Cache-Control': 'public, max-age=86400',
+    // Кратък кеш: достатъчен да поеме повторни заявки, но не толкова дълъг,
+    // че да пречи при отстраняване на грешки.
+    'Cache-Control': 'public, max-age=3600',
   };
 
   const isbn = normalise((event.queryStringParameters || {}).isbn);
 
-  // Проверката на контролната цифра става тук, за да не изпращаме към Озон
-  // заявки за боклук — сгрешено въвеждане не бива да им товари сървъра.
+  // Проверката на контролната цифра става тук, за да не изпращаме към
+  // Хеликон заявки за боклук — сгрешено въвеждане не бива да им товари сървъра.
   if (!validEan13(isbn)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid-barcode' }) };
+  }
+
+  const searchUrl = SEARCH_URL(isbn);
+  const search = await get(searchUrl);
+  if (!search.ok) {
     return {
-      statusCode: 400,
+      statusCode: 502,
       headers,
-      body: JSON.stringify({ error: 'invalid-barcode' }),
+      body: JSON.stringify({ found: false, stage: 'search', status: search.status, url: searchUrl }),
     };
   }
 
-  // Обхождаме кандидатите, докато някой върне страница със продуктови връзки.
-  // Записваме какво е станало с всеки, за да е ясно защо се е провалило.
-  const attempts = [];
-  let links = [];
-  for (const build of SEARCH_CANDIDATES) {
-    const url = build(isbn);
-    const result = await get(url);
-    const candidateLinks = result.ok ? productLinks(result.text) : [];
-    attempts.push({ url, status: result.status, links: candidateLinks.length });
-    if (candidateLinks.length > 0) { links = candidateLinks; break; }
-  }
-
+  const links = productLinks(search.text);
   if (links.length === 0) {
-    // Диагностиката се връща нарочно: без нея „не работи“ е неразличимо от
-    // „книгата я няма“, а двете се поправят по съвсем различен начин.
     return {
       statusCode: 404,
       headers,
-      body: JSON.stringify({ found: false, attempts }),
+      body: JSON.stringify({ found: false, stage: 'no-results', url: searchUrl }),
     };
   }
 
-  // Търсачката на Озон е размита и никога не връща нула резултата — на
-  // безсмислица отговаря с трийсет несвързани продукта. Затова всеки
-  // кандидат се приема само ако баркодът на страницата съвпада точно със
-  // сканирания. Без тази проверка ще се записват грешни книги.
+  // Всеки кандидат се приема само ако ISBN-ът на страницата съвпада точно
+  // със сканирания. Търсачката може да върне сродни издания, а грешно
+  // записана книга е по-лоша от ненамерена.
+  const checked = [];
   for (const link of links) {
     const page = await get(link);
-    if (!page.ok) continue;
+    if (!page.ok) { checked.push({ link, status: page.status }); continue; }
 
     const product = parseProduct(page.text);
-    if (product.barcode !== isbn && product.isbnField !== isbn) continue;
+    checked.push({ link, isbn: product.isbn || null });
+    if (product.isbn !== isbn && product.barcode !== isbn) continue;
 
     return {
       statusCode: 200,
@@ -197,19 +203,19 @@ exports.handler = async function (event) {
         publisher: product.publisher,
         published: product.published,
         pages: product.pages,
+        binding: product.binding,
+        language: product.language,
         cover: product.cover,
         description: product.description,
-        series: product.series,
-        source: 'Ozone.bg',
+        source: 'Helikon.bg',
         url: link,
       }),
     };
   }
 
-  // Имало е резултати, но никой не е бил търсената книга.
   return {
     statusCode: 404,
     headers,
-    body: JSON.stringify({ found: false, checked: links, reason: 'no-barcode-match' }),
+    body: JSON.stringify({ found: false, stage: 'no-isbn-match', checked }),
   };
 };
