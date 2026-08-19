@@ -17,8 +17,12 @@ const SEARCH_URL = q => `https://www.helikon.bg/search/?q=${encodeURIComponent(q
 const USER_AGENT =
   'FindAndAddYourBook/1.0 (personal book catalogue; +https://dulcet-kelpie-972af5.netlify.app)';
 
-const TIMEOUT_MS = 8000;
-const MAX_CANDIDATES = 5;
+// Netlify прекратява функциите след 10 секунди. Всяка заявка има свой лимит,
+// а DEADLINE_MS пази общия сбор под тавана: без него пет бавни страници по
+// осем секунди щяха да надхвърлят лимита и да върнат грешка вместо книга.
+const TIMEOUT_MS = 3500;
+const MAX_CANDIDATES = 3;
+const DEADLINE_MS = 8500;
 
 // --- ISBN проверка -------------------------------------------------------
 
@@ -174,6 +178,9 @@ exports.handler = async function (event) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'invalid-barcode' }) };
   }
 
+  const startedAt = Date.now();
+  const timeLeft = () => DEADLINE_MS - (Date.now() - startedAt);
+
   const searchUrl = SEARCH_URL(isbn);
   const search = await get(searchUrl);
   if (!search.ok) {
@@ -198,6 +205,15 @@ exports.handler = async function (event) {
   // записана книга е по-лоша от ненамерена.
   const checked = [];
   for (const link of links) {
+    // Спираме, преди Netlify да ни прекъсне: по-добре честен отговор
+    // „не е намерено“, отколкото прекъсната функция без обяснение.
+    if (timeLeft() < TIMEOUT_MS) {
+      return {
+        statusCode: 404,
+        headers,
+        body: JSON.stringify({ found: false, stage: 'deadline', checked }),
+      };
+    }
     const page = await get(link);
     if (!page.ok) { checked.push({ link, status: page.status }); continue; }
 
