@@ -473,3 +473,126 @@ dialog { width: min(100% - 36px, 600px); border: 0; border-radius: 14px; color: 
   height: 1px;
   background: var(--line);
 }
+
+/* --- Themes -------------------------------------------------------------
+   The chips use their own pair of variables rather than --cream/--forest,
+   because --cream also paints the little book bars that sit on the dark
+   green brand mark and must stay light in either theme. */
+:root {
+  --chip-bg: var(--cream);
+  --chip-ink: var(--forest);
+  --danger: #a2564b;
+  --danger-soft: #f2e3e0;
+  --dot: #cfd2c9;
+  --page-glow: #efe6d2;
+}
+
+[data-theme="dark"] {
+  --ink: #e8e5db;
+  --muted: #98a199;
+  --paper: #141814;
+  --card: #1c211d;
+  --line: #2c332e;
+  --forest: #1f4530;
+  --forest-light: #2d6142;
+  --gold: #e2b85c;
+  --cream: #f0e8d6;
+  --chip-bg: #2a322c;
+  --chip-ink: #dfe6d9;
+  --danger: #d98b7e;
+  --danger-soft: #3a2622;
+  --dot: #3d453e;
+  --page-glow: #1c2a20;
+  color-scheme: dark;
+}
+
+[data-theme="dark"] body {
+  background: radial-gradient(circle at 87% 5%, var(--page-glow) 0, transparent 24rem), var(--paper);
+}
+
+[data-theme="dark"] dialog {
+  background: var(--card);
+  box-shadow: 0 20px 60px #0009;
+}
+
+[data-theme="dark"] .settings-body > p,
+[data-theme="dark"] .dialog-help,
+[data-theme="dark"] details,
+[data-theme="dark"] .connection-pill { color: var(--muted); }
+
+[data-theme="dark"] .settings-field { color: var(--ink); }
+
+[data-theme="dark"] .settings-field input {
+  background: #11150f;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+[data-theme="dark"] code { background: #262c26; }
+[data-theme="dark"] details a { color: var(--gold); }
+[data-theme="dark"] .sheet-table th { background: var(--chip-bg); }
+
+/* Google asks for their button to stay light, so it keeps a pale surface
+   in both themes rather than inverting with everything else. */
+[data-theme="dark"] .button-google { background: #f1f1ef; border-color: #40463f; }
+[data-theme="dark"] .button-google:hover { background: #e6e6e3; }
+
+.copy-count { background: var(--chip-bg); color: var(--chip-ink); }
+.already-owned { background: var(--chip-bg); color: var(--chip-ink); }
+.copy-remove { color: var(--danger); }
+.copy-remove:hover { color: var(--danger); filter: brightness(0.85); }
+.copy-dot { background: var(--dot); }
+.copy-badge { color: var(--muted); }
+.library-delete { color: var(--muted); }
+.library-delete:hover,
+.library-delete:focus-visible { background: var(--danger-soft); color: var(--danger); }
+
+/* --- Settings panel ------------------------------------------------------ */
+
+.settings-section + .settings-section {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section h3 {
+  margin: 0 0 6px;
+  font-family: "Playfair Display", Georgia, serif;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.settings-section p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.theme-choice {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.theme-option {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.theme-option[aria-pressed="true"] {
+  background: var(--forest);
+  color: #f4f1e6;
+}
+
+.theme-option:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}

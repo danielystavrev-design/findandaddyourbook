@@ -47,7 +47,35 @@ const storage = {
   // bookcase can be scanned in one go without re-picking it every time.
   get defaultLocation() { return localStorage.getItem('bookdrop:default-location') || ''; },
   set defaultLocation(value) { localStorage.setItem('bookdrop:default-location', value); },
+  get theme() { return localStorage.getItem('bookdrop:theme') || 'system'; },
+  set theme(value) { localStorage.setItem('bookdrop:theme', value); },
 };
+
+// --- Theme ---------------------------------------------------------------
+
+const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function resolvedTheme() {
+  const choice = storage.theme;
+  if (choice === 'dark' || choice === 'light') return choice;
+  return darkMediaQuery.matches ? 'dark' : 'light';
+}
+
+function applyTheme() {
+  const theme = resolvedTheme();
+  document.documentElement.setAttribute('data-theme', theme);
+  // The browser chrome on mobile picks this up, so it should follow too.
+  document.querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', theme === 'dark' ? '#141814' : '#14281d');
+  document.querySelectorAll('[data-theme-choice]').forEach(button =>
+    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === storage.theme)));
+}
+
+// Only meaningful while following the system: an explicit choice should not
+// flip when the phone crosses into night mode.
+darkMediaQuery.addEventListener('change', () => {
+  if (storage.theme === 'system') applyTheme();
+});
 
 // --- Copies -------------------------------------------------------------
 
@@ -1383,15 +1411,31 @@ elements.exportXlsxButton.addEventListener('click', exportXlsx);
 elements.exportCsvButton.addEventListener('click', exportCsv);
 elements.openAccountButton.addEventListener('click', () => { elements.accountError.classList.add('hidden'); elements.accountDialog.showModal(); });
 document.querySelector('#close-account').addEventListener('click', () => elements.accountDialog.close());
-document.querySelector('#import-button').addEventListener('click', () =>
-  document.querySelector('#import-file').click());
-document.querySelector('#import-file').addEventListener('change', async event => {
+// Every listener below is attached defensively. A single missing element
+// would otherwise throw while wiring up and silently kill everything after
+// it — which is exactly how the import button disappearing broke the app.
+const on = (selector, event, handler) =>
+  document.querySelector(selector)?.addEventListener(event, handler);
+
+on('#open-settings', 'click', () => document.querySelector('#settings-dialog')?.showModal());
+on('#close-settings', 'click', () => document.querySelector('#settings-dialog')?.close());
+
+document.querySelectorAll('[data-theme-choice]').forEach(button =>
+  button.addEventListener('click', () => {
+    storage.theme = button.dataset.themeChoice;
+    applyTheme();
+  }));
+
+on('#import-button', 'click', () => document.querySelector('#import-file')?.click());
+on('#import-file', 'change', async event => {
   const [file] = event.target.files;
   if (file) await importFromFile(file);
   // Cleared so choosing the same file again still fires a change event.
   event.target.value = '';
 });
-document.querySelector('#google-sign-in').addEventListener('click', handleGoogleSignIn);
+on('#google-sign-in', 'click', handleGoogleSignIn);
+
+applyTheme();
 document.querySelector('#sign-in-button').addEventListener('click', () => handleAuthAction('signIn'));
 document.querySelector('#sign-up-button').addEventListener('click', () => handleAuthAction('signUp'));
 document.querySelector('#sign-out-button').addEventListener('click', () => auth?.signOut());
