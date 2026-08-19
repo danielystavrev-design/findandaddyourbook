@@ -108,7 +108,7 @@ function tableValue(html, label) {
 /** Авторът стои като връзка към страницата му. */
 function authorFrom(html) {
   const matches = [...html.matchAll(
-    /<a[^>]+href=["']https:\/\/www\.helikon\.bg\/author\/[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi)];
+    /<a[^>]+href=["'](?:https:\/\/www\.helikon\.bg)?\/author\/[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi)];
   const names = [...new Set(matches.map(m => strip(m[1])).filter(Boolean))];
   return names.join(', ');
 }
@@ -131,16 +131,29 @@ function parseProduct(html) {
 }
 
 /**
- * Адресите на книгите са вида helikon.bg/253830-Заглавие.html — числото
- * отпред ги отличава от /author/, /publisher/ и /books/, чиито пътища
- * започват с дума. Плъзгачите могат да съдържат наклонени черти и двоеточия.
+ * Адресите на книгите са вида /253830-Заглавие.html — числото отпред ги
+ * отличава от /author/, /publisher/ и /books/, чиито пътища започват с дума.
+ *
+ * Приемаме и абсолютни, и относителни адреси: сайтът може да изписва кой да
+ * е от двата вида, а изискването само за абсолютни е причината търсенето да
+ * не намираше нищо. Плъзгачите съдържат запетаи, двоеточия и наклонени черти.
  */
 function productLinks(html, limit = MAX_CANDIDATES) {
-  const found = new Set();
-  const pattern = /https:\/\/www\.helikon\.bg\/\d+-[^"'\s>]*?\.html/gi;
+  const paths = new Set();
+
+  const withHref = /href=["'](?:https?:\/\/(?:www|m)\.helikon\.bg)?(\/\d+-[^"']*?\.html)["']/gi;
   let match;
-  while ((match = pattern.exec(html)) && found.size < limit) found.add(match[0]);
-  return [...found];
+  while ((match = withHref.exec(html)) && paths.size < limit) paths.add(match[1]);
+
+  // Подсигуряване, ако атрибутът е изписан необичайно. Закотвено след кавичка
+  // или интервал, иначе /author/11766-Ime.html би дало „/11766-Ime.html“ и
+  // функцията щеше да отвори страница на автор вместо книга.
+  if (paths.size === 0) {
+    const bare = /(?<=["'\s])(?:https?:\/\/(?:www|m)\.helikon\.bg)?(\/\d+-[^\s"'<>]*?\.html)/gi;
+    while ((match = bare.exec(html)) && paths.size < limit) paths.add(match[1]);
+  }
+
+  return [...paths].map(path => `https://www.helikon.bg${path}`);
 }
 
 // --- Основна логика ------------------------------------------------------
