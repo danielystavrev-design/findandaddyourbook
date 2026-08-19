@@ -431,3 +431,45 @@ dialog { width: min(100% - 36px, 600px); border: 0; border-radius: 14px; color: 
     width: 100%;
   }
 }
+
+/* --- Google sign-in ----------------------------------------------------- */
+
+/* Google's brand guidelines expect a white button with their mark at full
+   colour, so this deliberately steps outside the app's palette. */
+.button-google {
+  width: 100%;
+  justify-content: center;
+  gap: 10px;
+  background: #ffffff;
+  color: #1f1f1f;
+  border: 1px solid #dadce0;
+  font-weight: 500;
+}
+
+.button-google:hover {
+  background: #f8f9fa;
+  border-color: #d2d5d9;
+}
+
+.google-mark {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}

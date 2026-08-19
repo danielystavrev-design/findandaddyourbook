@@ -350,8 +350,54 @@ function authErrorMessage(error) {
     'auth/user-not-found': 'No account found with that email.',
     'auth/invalid-credential': 'Incorrect email or password.',
     'auth/too-many-requests': 'Too many attempts. Please try again shortly.',
+    // Someone registered with a password first, then returned via Google.
+    'auth/account-exists-with-different-credential':
+      'You already have an account with that email. Sign in with your password instead.',
+    'auth/popup-closed-by-user': 'Sign-in was cancelled.',
+    'auth/cancelled-popup-request': 'Sign-in was cancelled.',
+    'auth/unauthorized-domain':
+      'This site is not authorised for Google sign-in yet. Add its domain in the Firebase console.',
+    'auth/operation-not-allowed':
+      'Google sign-in is not enabled for this project yet.',
   };
   return messages[error.code] || 'Something went wrong. Please try again.';
+}
+
+// Google sign-in. A popup is tried first because it keeps the person on the
+// page; when the browser blocks it — common on iOS — we fall back to a full
+// redirect, whose result is picked up on the next load.
+async function handleGoogleSignIn() {
+  elements.accountError.classList.add('hidden');
+  if (!firebaseReady) { showAccountError('Accounts are not set up on this site yet.'); return; }
+
+  const provider = new firebase.auth.GoogleAuthProvider();
+  // Always ask which account to use; otherwise a shared device silently
+  // reuses whoever signed in last.
+  provider.setCustomParameters({ prompt: 'select_account' });
+
+  try {
+    const credential = await auth.signInWithPopup(provider);
+    elements.accountDialog.close();
+    await migrateLocalBooksToAccount(credential.user);
+  } catch (error) {
+    const popupUnavailable = [
+      'auth/popup-blocked',
+      'auth/operation-not-supported-in-this-environment',
+      'auth/web-storage-unsupported',
+    ].includes(error.code);
+    if (popupUnavailable) {
+      try {
+        await auth.signInWithRedirect(provider);
+        return;                       // the page navigates away from here
+      } catch (redirectError) {
+        showAccountError(authErrorMessage(redirectError));
+        return;
+      }
+    }
+    if (error.code === 'auth/popup-closed-by-user' ||
+        error.code === 'auth/cancelled-popup-request') return;   // deliberate, not an error
+    showAccountError(authErrorMessage(error));
+  }
 }
 
 async function handleAuthAction(mode) {
@@ -402,6 +448,13 @@ if (firebaseReady) {
     updateConnectionState();
     attachLibrarySource();
   });
+
+  // Completes a Google sign-in that went the redirect route. Without this the
+  // person returns signed in but is never offered the migration of the books
+  // they added as a guest, which would look as though those books vanished.
+  auth.getRedirectResult()
+    .then(result => { if (result?.user) return migrateLocalBooksToAccount(result.user); })
+    .catch(error => showAccountError(authErrorMessage(error)));
 }
 
 async function lookupBook() {
@@ -1172,6 +1225,7 @@ elements.exportXlsxButton.addEventListener('click', exportXlsx);
 elements.exportCsvButton.addEventListener('click', exportCsv);
 elements.openAccountButton.addEventListener('click', () => { elements.accountError.classList.add('hidden'); elements.accountDialog.showModal(); });
 document.querySelector('#close-account').addEventListener('click', () => elements.accountDialog.close());
+document.querySelector('#google-sign-in').addEventListener('click', handleGoogleSignIn);
 document.querySelector('#sign-in-button').addEventListener('click', () => handleAuthAction('signIn'));
 document.querySelector('#sign-up-button').addEventListener('click', () => handleAuthAction('signUp'));
 document.querySelector('#sign-out-button').addEventListener('click', () => auth?.signOut());
