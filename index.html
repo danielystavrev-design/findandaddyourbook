@@ -68,6 +68,16 @@
 
           <div id="default-place" class="default-place"></div>
 
+          <div class="scan-alt">
+            <label class="title-search">
+              <span class="sr-only">Search the archive by title or author</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+              <input id="title-search-input" type="search" autocomplete="off" placeholder="No barcode? Search 26,000 titles by name" />
+            </label>
+            <button id="add-manual-button" class="button button-secondary" type="button">Add by hand</button>
+          </div>
+          <div id="title-search-results" class="title-search-results" hidden></div>
+
           <div class="scan-options">
             <span>or</span>
             <button id="camera-button" class="button button-secondary">
@@ -87,6 +97,11 @@
               <h2 id="collection-title">Recently added</h2>
             </div>
             <div class="collection-controls">
+              <label class="collection-search">
+                <span class="sr-only">Search your collection</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+                <input id="collection-search" type="search" autocomplete="off" placeholder="Search your shelf" />
+              </label>
               <label class="place-filter">
                 <span class="sr-only">Filter by place</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11Z"/><circle cx="12" cy="10" r="2.6"/></svg>
@@ -128,6 +143,22 @@
               <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z"/>
             </svg>
             Continue with Google
+          </button>
+          <button id="microsoft-sign-in" class="button button-social button-microsoft">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="social-mark">
+              <rect x="2" y="2" width="9.2" height="9.2" fill="#F25022"/>
+              <rect x="12.8" y="2" width="9.2" height="9.2" fill="#7FBA00"/>
+              <rect x="2" y="12.8" width="9.2" height="9.2" fill="#00A4EF"/>
+              <rect x="12.8" y="12.8" width="9.2" height="9.2" fill="#FFB900"/>
+            </svg>
+            Continue with Microsoft
+          </button>
+          <button id="apple-sign-in" class="button button-social button-apple">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="social-mark">
+              <path fill="currentColor" d="M16.3 12.7c0-2.4 2-3.6 2.1-3.6-1.1-1.7-2.9-1.9-3.6-1.9-1.5-.2-3 .9-3.8.9s-2-.9-3.2-.9c-1.7 0-3.2 1-4 2.5-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.5 1.2 0 1.7-.8 3.1-.8s1.9.8 3.2.8 2.2-1.2 3-2.4c.9-1.4 1.3-2.7 1.3-2.8-.1 0-2.4-1-2.4-3.7Z"/>
+              <path fill="currentColor" d="M14.1 5.4c.7-.8 1.1-1.9 1-3-1 0-2.2.7-2.9 1.5-.6.7-1.1 1.8-1 2.9 1.1.1 2.2-.6 2.9-1.4Z"/>
+            </svg>
+            Continue with Apple
           </button>
           <p class="auth-divider"><span>or use an email and password</span></p>
           <label class="settings-field">Email
@@ -176,6 +207,19 @@
             <button class="theme-option" data-theme-choice="dark" type="button">Dark</button>
             <button class="theme-option" data-theme-choice="system" type="button">System</button>
           </div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Scanning a whole shelf</h3>
+          <p>For cataloguing many books in one go. Both can be on at once, which gives you a hands-free loop: scan, save, ready for the next spine.</p>
+          <label class="toggle-row">
+            <input id="auto-save-toggle" type="checkbox" />
+            <span><strong>Save automatically</strong>Found books go straight into your collection, without tapping Save.</span>
+          </label>
+          <label class="toggle-row">
+            <input id="auto-next-toggle" type="checkbox" />
+            <span><strong>Clear for the next book</strong>After saving, the result clears itself so you can scan again right away.</span>
+          </label>
         </section>
 
         <section class="settings-section">

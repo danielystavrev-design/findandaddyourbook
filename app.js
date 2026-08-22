@@ -13,6 +13,9 @@ const elements = {
   exportCsvButton: document.querySelector('#export-csv'),
   locationFilter: document.querySelector('#location-filter'),
   defaultPlace: document.querySelector('#default-place'),
+  collectionSearch: document.querySelector('#collection-search'),
+  titleSearchInput: document.querySelector('#title-search-input'),
+  titleSearchResults: document.querySelector('#title-search-results'),
   cameraDialog: document.querySelector('#camera-dialog'),
   cameraVideo: document.querySelector('#camera-video'),
   cameraStatus: document.querySelector('#camera-status'),
@@ -49,6 +52,16 @@ const storage = {
   set defaultLocation(value) { localStorage.setItem('bookdrop:default-location', value); },
   get theme() { return localStorage.getItem('bookdrop:theme') || 'system'; },
   set theme(value) { localStorage.setItem('bookdrop:theme', value); },
+  // Batch scanning. The two are independent on purpose: saving without
+  // clearing lets you check each result, clearing without saving lets you
+  // sweep a shelf you don't intend to keep. Together they give a hands-free
+  // loop — scan, save, ready for the next spine.
+  get autoSave() { return localStorage.getItem('bookdrop:auto-save') === 'true'; },
+  set autoSave(value) { localStorage.setItem('bookdrop:auto-save', String(value)); },
+  get autoNext() { return localStorage.getItem('bookdrop:auto-next') === 'true'; },
+  set autoNext(value) { localStorage.setItem('bookdrop:auto-next', String(value)); },
+  get collectionQuery() { return localStorage.getItem('bookdrop:collection-query') || ''; },
+  set collectionQuery(value) { localStorage.setItem('bookdrop:collection-query', value); },
 };
 
 // --- Theme ---------------------------------------------------------------
@@ -391,17 +404,38 @@ function authErrorMessage(error) {
   return messages[error.code] || 'Something went wrong. Please try again.';
 }
 
-// Google sign-in. A popup is tried first because it keeps the person on the
-// page; when the browser blocks it — common on iOS — we fall back to a full
-// redirect, whose result is picked up on the next load.
-async function handleGoogleSignIn() {
+// Google, Microsoft and Apple all follow the same shape, so one function
+// covers them; only the provider object differs.
+function socialProvider(name) {
+  if (name === 'google') {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    // Always ask which account to use; otherwise a shared device silently
+    // reuses whoever signed in last.
+    provider.setCustomParameters({ prompt: 'select_account' });
+    return provider;
+  }
+  if (name === 'microsoft') {
+    const provider = new firebase.auth.OAuthProvider('microsoft.com');
+    provider.setCustomParameters({ prompt: 'select_account' });
+    return provider;
+  }
+  if (name === 'apple') {
+    const provider = new firebase.auth.OAuthProvider('apple.com');
+    // Apple only releases the name and email on the very first authorisation,
+    // so they must be requested up front or they are gone for good.
+    provider.addScope('email');
+    provider.addScope('name');
+    return provider;
+  }
+  return null;
+}
+
+async function handleSocialSignIn(name) {
   elements.accountError.classList.add('hidden');
   if (!firebaseReady) { showAccountError('Accounts are not set up on this site yet.'); return; }
 
-  const provider = new firebase.auth.GoogleAuthProvider();
-  // Always ask which account to use; otherwise a shared device silently
-  // reuses whoever signed in last.
-  provider.setCustomParameters({ prompt: 'select_account' });
+  const provider = socialProvider(name);
+  if (!provider) return;
 
   try {
     const credential = await auth.signInWithPopup(provider);
@@ -427,6 +461,8 @@ async function handleGoogleSignIn() {
     showAccountError(authErrorMessage(error));
   }
 }
+
+const handleGoogleSignIn = () => handleSocialSignIn('google');
 
 async function handleAuthAction(mode) {
   elements.accountError.classList.add('hidden');
@@ -593,7 +629,7 @@ async function fetchOpenLibraryBook(isbn) {
   };
 }
 
-function renderResult(book) {
+function renderResult(book, fromArchivePick = false) {
   const fragment = elements.resultTemplate.content.cloneNode(true);
   const cover = fragment.querySelector('.result-cover');
   cover.src = bookCover(book);
@@ -644,6 +680,13 @@ function renderResult(book) {
   fragment.querySelector('.result-actions').append(cobissLink, goodreadsLink);
   elements.resultSection.replaceChildren(fragment);
   elements.resultSection.classList.remove('hidden');
+
+  // Batch mode: commit straight away instead of waiting for a tap. Skipped
+  // for a title picked out of the archive by hand, where the person is
+  // already looking at the screen and choosing deliberately.
+  if (storage.autoSave && !fromArchivePick) {
+    saveActiveBook();
+  }
   elements.resultSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -761,15 +804,94 @@ async function fetchGoogleByTitle(title, authors) {
   } catch { return []; }
 }
 
+// --- Searching ------------------------------------------------------------
+
+// Folds case and strips diacritics so "Йовков" matches "йовков", and a Latin
+// query still finds a Cyrillic title when the letters happen to coincide.
+function searchKey(value) {
+  return String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function matchesQuery(book, query) {
+  if (!query) return true;
+  const haystack = searchKey(`${book.title} ${book.authors} ${book.publisher || ''} ${book.isbn || ''}`);
+  // Every word must appear somewhere, so "йовков дълг" finds the book
+  // regardless of the order the person happens to type the words in.
+  return searchKey(query).split(/\s+/).filter(Boolean).every(word => haystack.includes(word));
+}
+
+/**
+ * Searches the bundled archive by title or author, for the very common case
+ * of holding a book whose barcode is missing, damaged, or simply not printed.
+ * The archive is a plain object of 26k entries, so the scan is capped and the
+ * caller debounces to keep typing responsive on a phone.
+ */
+function searchArchiveByTitle(query, limit = 25) {
+  const words = searchKey(query).split(/\s+/).filter(Boolean);
+  if (words.length === 0 || query.trim().length < 3) return [];
+  const results = [];
+  for (const [isbn, book] of Object.entries(bookArchive)) {
+    const haystack = searchKey(`${book.title} ${book.authors || ''}`);
+    if (words.every(word => haystack.includes(word))) {
+      results.push({ isbn, ...book });
+      if (results.length >= limit) break;
+    }
+  }
+  // Shorter titles first: an exact-ish match is usually the shortest one that
+  // still contains every word.
+  return results.sort((a, b) => (a.title || '').length - (b.title || '').length);
+}
+
+let archiveSearchTimer = null;
+
+function renderArchiveSearch() {
+  const host = elements.titleSearchResults;
+  const query = elements.titleSearchInput?.value || '';
+  if (!host) return;
+
+  if (query.trim().length < 3) {
+    host.innerHTML = '';
+    host.hidden = true;
+    return;
+  }
+
+  const results = searchArchiveByTitle(query);
+  host.hidden = false;
+  if (results.length === 0) {
+    host.innerHTML = '<p class="title-search-empty">Nothing in the archive matches that. Try fewer words, or add the book by hand.</p>';
+    return;
+  }
+
+  host.replaceChildren(...results.map(book => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'title-search-hit';
+    row.innerHTML = `
+      <span class="title-search-title">${escapeHtml(book.title)}</span>
+      <span class="title-search-meta">${escapeHtml([book.authors, book.published, book.publisher].filter(Boolean).join(' · '))}</span>`;
+    row.addEventListener('click', () => {
+      elements.titleSearchInput.value = '';
+      host.hidden = true;
+      host.innerHTML = '';
+      activeBook = { ...book, description: book.description || '' };
+      renderResult(activeBook, true);
+    });
+    return row;
+  }));
+}
+
 function renderManualEntry(isbn) {
   elements.resultSection.innerHTML = `
     <article class="manual-entry">
       <div class="manual-entry-icon" aria-hidden="true">+</div>
       <div>
-        <p class="match-label">Edition not in public catalogue</p>
+        <p class="match-label">${isbn ? 'Edition not in public catalogue' : 'Add by hand'}</p>
         <h2>Add this book once</h2>
-        <p class="manual-copy">The barcode <code>${escapeHtml(isbn)}</code> is valid, but this edition isn't listed anywhere searchable. Add the title and author below; it will be recognised instantly on every future scan.</p>
+        <p class="manual-copy">${isbn
+          ? `The barcode <code>${escapeHtml(isbn)}</code> is valid, but this edition isn't listed anywhere searchable. Add the title and author below; it will be recognised instantly on every future scan.`
+          : 'For a book with no barcode at all — older editions, or one that will not scan. A barcode is optional, but adding one means a future scan will find it.'}</p>
         <div class="manual-fields">
+          ${isbn ? '' : '<label>Barcode or ISBN <span class="field-optional">optional</span><input id="manual-isbn" inputmode="numeric" autocomplete="off" placeholder="Leave empty if there is none" /></label>'}
           <label>Book title<input id="manual-title" autocomplete="off" placeholder="e.g. Title of the book" /></label>
           <label>Author(s)<input id="manual-authors" autocomplete="off" placeholder="e.g. Firstname Lastname" /></label>
         </div>
@@ -781,8 +903,19 @@ function renderManualEntry(isbn) {
     const title = document.querySelector('#manual-title').value.trim();
     const authors = document.querySelector('#manual-authors').value.trim();
     if (!title || !authors) { showToast('Add both the title and author before saving.'); return; }
-    activeBook = { isbn, title, authors, published: '', publisher: '', description: 'Added manually because this edition was not available in the public catalogues.', cover: '', source: 'Manual entry' };
-    renderResult(activeBook);
+
+    // Identity in this collection is the barcode. A book genuinely without one
+    // still needs a unique key, so it gets a local id rather than an empty
+    // string, which would make every barcodeless book collide into one entry.
+    let key = normalizeIsbn(document.querySelector('#manual-isbn')?.value || isbn);
+    if (key && !(isValidIsbn13(key) || isValidIsbn10(key))) {
+      showToast('That barcode does not look valid. Leave it empty or check the digits.');
+      return;
+    }
+    if (!key) key = `local-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+    activeBook = { isbn: key, title, authors, published: '', publisher: '', description: 'Added manually because this edition was not available in the public catalogues.', cover: '', source: 'Manual entry' };
+    renderResult(activeBook, true);
   });
   document.querySelector('#cancel-manual').addEventListener('click', () => elements.resultSection.classList.add('hidden'));
   elements.resultSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -800,6 +933,7 @@ async function saveActiveBook() {
     const copies = [...bookCopies(existing), { location, addedAt: new Date().toISOString() }];
     await persistCopies(existing, copies);
     showToast(`Added a second home for this title — you now have ${copies.length} copies.`);
+    resetAfterSave();
     return;
   }
 
@@ -832,6 +966,24 @@ async function saveActiveBook() {
   }
 
   showToast(currentUser ? 'Saved to your account — it will follow you on any device.' : 'Saved to your local collection. Sign in to keep it on every device.');
+  resetAfterSave();
+}
+
+// After a save, batch mode clears the screen and puts the cursor back so the
+// next barcode can go straight in. A short pause keeps the confirmation
+// readable — without it books vanish before you can see which one landed.
+function resetAfterSave() {
+  if (!storage.autoNext) return;
+  setTimeout(() => {
+    activeBook = null;
+    activeLocationPicker = null;
+    elements.resultSection.classList.add('hidden');
+    elements.resultSection.replaceChildren();
+    elements.isbnInput.value = '';
+    // Focus is skipped on touch devices: it would raise the keyboard over the
+    // camera button between every single book.
+    if (window.matchMedia('(hover: hover)').matches) elements.isbnInput.focus();
+  }, 900);
 }
 
 // Writes a whole copies array back to whichever store is currently backing
@@ -978,20 +1130,26 @@ function renderLocationFilter() {
 
 function visibleBooks() {
   const filter = storage.locationFilter;
-  if (!filter) return currentLibraryBooks;
-  // A title stays visible when any one of its copies is in the chosen place.
+  const query = storage.collectionQuery;
+  // Text and place narrow the list together rather than replacing each other:
+  // "everything by this author, on that shelf" is a natural thing to want.
+  const byText = query
+    ? currentLibraryBooks.filter(book => matchesQuery(book, query))
+    : currentLibraryBooks;
+  if (!filter) return byText;
   if (filter === '__none__') {
-    return currentLibraryBooks.filter(book => bookCopies(book).some(copy => !copy.location));
+    return byText.filter(book => bookCopies(book).some(copy => !copy.location));
   }
-  return currentLibraryBooks.filter(book =>
-    bookCopies(book).some(copy => copy.location === filter));
+  return byText.filter(book => bookCopies(book).some(copy => copy.location === filter));
 }
 
 // One entry per physical copy, for the views where a copy is the unit: the
 // spreadsheet and the exports, where counting books on a shelf is the point.
 function visibleCopyRows() {
   const filter = storage.locationFilter;
+  const query = storage.collectionQuery;
   return currentLibraryBooks.flatMap(book => {
+    if (query && !matchesQuery(book, query)) return [];
     const copies = bookCopies(book);
     return copies
       .map((copy, index) => ({ book, copy, index, total: copies.length }))
@@ -1433,7 +1591,48 @@ on('#import-file', 'change', async event => {
   // Cleared so choosing the same file again still fires a change event.
   event.target.value = '';
 });
-on('#google-sign-in', 'click', handleGoogleSignIn);
+on('#google-sign-in', 'click', () => handleSocialSignIn('google'));
+on('#microsoft-sign-in', 'click', () => handleSocialSignIn('microsoft'));
+on('#apple-sign-in', 'click', () => handleSocialSignIn('apple'));
+
+// Searching the shelf. Debounced so a long collection doesn't re-render on
+// every keystroke.
+let collectionSearchTimer = null;
+if (elements.collectionSearch) {
+  elements.collectionSearch.value = storage.collectionQuery;
+  elements.collectionSearch.addEventListener('input', event => {
+    clearTimeout(collectionSearchTimer);
+    const value = event.target.value;
+    collectionSearchTimer = setTimeout(() => {
+      storage.collectionQuery = value;
+      renderLibrary();
+    }, 180);
+  });
+}
+
+// Searching the archive scans 26k entries, so it waits a beat longer.
+on('#title-search-input', 'input', () => {
+  clearTimeout(archiveSearchTimer);
+  archiveSearchTimer = setTimeout(renderArchiveSearch, 280);
+});
+
+// Adding by hand without a barcode at all: the entry form is the same one
+// used when a lookup fails, just reached deliberately.
+on('#add-manual-button', 'click', () => {
+  elements.titleSearchResults.hidden = true;
+  renderManualEntry('');
+});
+
+const batchToggles = [
+  ['#auto-save-toggle', 'autoSave'],
+  ['#auto-next-toggle', 'autoNext'],
+];
+batchToggles.forEach(([selector, key]) => {
+  const input = document.querySelector(selector);
+  if (!input) return;
+  input.checked = storage[key];
+  input.addEventListener('change', () => { storage[key] = input.checked; });
+});
 
 applyTheme();
 document.querySelector('#sign-in-button').addEventListener('click', () => handleAuthAction('signIn'));
